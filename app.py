@@ -13,21 +13,19 @@ st.title("📊 엑셀 포트폴리오 뷰어")
 st.markdown("PC나 스마트폰에 있는 **엑셀 파일(.xlsx)**을 업로드하면 대시보드로 만들어줍니다.")
 
 # -----------------------------------------------------------------------------
-# 2. 엑셀 양식 다운로드 기능 (처음 쓰는 분들을 위해)
+# 2. 엑셀 양식 다운로드 기능
 # -----------------------------------------------------------------------------
 def get_template_excel():
-    # 예시 데이터
     data = {
         '종목코드': ['000660.KS', 'IAU', 'SPLG'],
         '종목명': ['SK하이닉스', 'iShares Gold', 'S&P 500'],
         '업종': ['반도체', '원자재', '지수추종'],
         '국가': ['한국', '미국', '미국'],
-        '수량': [1, 1, 1],
-        '매수단가': [550000, 80, 50.2]
+        '수량': [10, 20, 15],
+        '매수단가': [180000, 53.50, 68.20]
     }
     df = pd.DataFrame(data)
     
-    # 엑셀 파일로 변환 (메모리 상에서 처리)
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df.to_excel(writer, index=False, sheet_name='포트폴리오')
@@ -49,7 +47,7 @@ st.divider()
 uploaded_file = st.file_uploader("📂 엑셀 파일을 여기에 드래그하거나 선택하세요", type=['xlsx'])
 
 # -----------------------------------------------------------------------------
-# 4. 대시보드 출력 (파일이 올라왔을 때만 실행)
+# 4. 대시보드 출력
 # -----------------------------------------------------------------------------
 if uploaded_file is not None:
     try:
@@ -81,44 +79,91 @@ if uploaded_file is not None:
 
         with tab1:
             usd_krw = get_exchange_rate()
-            st.metric("🇺🇸/🇰🇷 실시간 환율", f"{usd_krw:,.2f} 원")
-            st.divider()
+            st.caption(f"기준 환율: 1 USD = {usd_krw:,.2f} KRW") # 환율은 작게 표시
 
             # 로딩바
             progress_bar = st.progress(0, text="자산 가치를 계산 중입니다...")
             
             current_prices = []
-            eval_values_krw = []
+            eval_values_krw = []    # 평가금액 리스트
+            buying_values_krw = []  # 매수금액 리스트 (추가됨)
             
             for index, row in df.iterrows():
                 price = get_current_price(row['종목코드'])
                 current_prices.append(price)
+                
+                # 국가별 계산 (환율 적용)
                 if row['국가'] == '미국':
-                    eval_values_krw.append(price * row['수량'] * usd_krw)
+                    # 미국 주식: 달러 * 환율
+                    eval_val = price * row['수량'] * usd_krw
+                    buy_val = row['매수단가'] * row['수량'] * usd_krw
                 else:
-                    eval_values_krw.append(price * row['수량'])
+                    # 한국 주식: 원화 그대로
+                    eval_val = price * row['수량']
+                    buy_val = row['매수단가'] * row['수량']
+
+                eval_values_krw.append(eval_val)
+                buying_values_krw.append(buy_val)
+                
                 progress_bar.progress((index + 1) / len(df))
             
             progress_bar.empty()
 
+            # 데이터프레임에 계산 결과 추가
             df['현재가(현지)'] = current_prices
+            df['매수금액(KRW)'] = buying_values_krw
             df['평가금액(KRW)'] = eval_values_krw
+            
+            # 개별 수익률 계산
             df['수익률(%)'] = df.apply(lambda x: ((x['현재가(현지)'] - x['매수단가']) / x['매수단가'] * 100) if x['매수단가'] > 0 else 0, axis=1)
 
-            total_asset = df['평가금액(KRW)'].sum()
-            st.info(f"💰 총 자산: **{total_asset:,.0f} 원**")
+            # ---------------------------------------------------------
+            # [추가된 기능] 전체 포트폴리오 요약 지표 계산
+            # ---------------------------------------------------------
+            total_buy_amt = df['매수금액(KRW)'].sum()       # 총 매수금액
+            total_eval_amt = df['평가금액(KRW)'].sum()      # 총 평가금액
+            total_profit = total_eval_amt - total_buy_amt   # 총 손익금
+            total_yield = (total_profit / total_buy_amt * 100) if total_buy_amt != 0 else 0 # 총 수익률
 
-            # 차트
+            # 3단 컬럼으로 지표 표시
+            st.divider()
+            m1, m2, m3 = st.columns(3)
+            
+            with m1:
+                st.metric(label="총 매수금액", value=f"{total_buy_amt:,.0f} 원")
+            
+            with m2:
+                # delta를 사용하여 (+ 1,500,000 원) 처럼 표시
+                st.metric(label="총 평가금액", value=f"{total_eval_amt:,.0f} 원", delta=f"{total_profit:+,.0f} 원")
+            
+            with m3:
+                # delta를 사용하여 수익률 색상 표시
+                st.metric(label="총 수익률", value=f"{total_yield:,.2f} %", delta=f"{total_yield:,.2f} %")
+            
+            st.divider()
+            # ---------------------------------------------------------
+
+            # 차트 영역
             c1, c2, c3 = st.columns(3)
             with c1:
-                st.plotly_chart(px.pie(df, values='평가금액(KRW)', names='업종', title="업종별"), use_container_width=True)
+                st.plotly_chart(px.pie(df, values='평가금액(KRW)', names='업종', title="업종별 비중", hole=0.3), use_container_width=True)
             with c2:
-                st.plotly_chart(px.pie(df, values='평가금액(KRW)', names='종목명', title="종목별"), use_container_width=True)
+                st.plotly_chart(px.pie(df, values='평가금액(KRW)', names='종목명', title="종목별 비중", hole=0.3), use_container_width=True)
             with c3:
-                st.plotly_chart(px.pie(df, values='평가금액(KRW)', names='국가', title="국가별", color='국가', color_discrete_map={'한국':'#00498c', '미국':'#bd081c'}), use_container_width=True)
+                st.plotly_chart(px.pie(df, values='평가금액(KRW)', names='국가', title="국가별 비중", color='국가', hole=0.3, color_discrete_map={'한국':'#00498c', '미국':'#bd081c'}), use_container_width=True)
 
             # 상세 표
-            st.dataframe(df[['종목명', '국가', '수량', '매수단가', '현재가(현지)', '수익률(%)', '평가금액(KRW)']].style.format({'매수단가': "{:,.2f}", '현재가(현지)': "{:,.2f}", '수익률(%)': "{:,.2f}%", '평가금액(KRW)': "{:,.0f}"}), use_container_width=True)
+            st.subheader("📋 보유 종목 상세")
+            st.dataframe(df[['종목명', '국가', '수량', '매수단가', '현재가(현지)', '수익률(%)', '평가금액(KRW)']]
+                         .style.format({
+                             '매수단가': "{:,.2f}", 
+                             '현재가(현지)': "{:,.2f}", 
+                             '수익률(%)': "{:,.2f}%", 
+                             '평가금액(KRW)': "{:,.0f}"
+                         })
+                         # 수익률에 따라 색상 입히기 (옵션)
+                         .background_gradient(subset=['수익률(%)'], cmap='RdYlGn', vmin=-20, vmax=20),
+                         use_container_width=True)
 
         with tab2:
             st.write("업로드한 엑셀 파일의 내용입니다.")
