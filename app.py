@@ -1,5 +1,3 @@
-Python 3.12.3 (tags/v3.12.3:f6650f9, Apr  9 2024, 14:05:25) [MSC v.1938 64 bit (AMD64)] on win32
-Type "help", "copyright", "credits" or "license()" for more information.
 import streamlit as st
 import pandas as pd
 import yfinance as yf
@@ -172,3 +170,4 @@ with tab1:
 ...     if st.button("💾 저장하고 요약 탭에서 확인하기", type="primary"):
 ...         st.session_state.portfolio_df = edited_df
 ...         st.toast("포트폴리오가 성공적으로 업데이트되었습니다!", icon="✅")
+
