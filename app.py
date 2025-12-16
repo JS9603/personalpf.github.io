@@ -79,14 +79,14 @@ if uploaded_file is not None:
 
         with tab1:
             usd_krw = get_exchange_rate()
-            st.caption(f"기준 환율: 1 USD = {usd_krw:,.2f} KRW") # 환율은 작게 표시
+            st.caption(f"기준 환율: 1 USD = {usd_krw:,.2f} KRW")
 
             # 로딩바
             progress_bar = st.progress(0, text="자산 가치를 계산 중입니다...")
             
             current_prices = []
-            eval_values_krw = []    # 평가금액 리스트
-            buying_values_krw = []  # 매수금액 리스트 (추가됨)
+            eval_values_krw = []
+            buying_values_krw = []
             
             for index, row in df.iterrows():
                 price = get_current_price(row['종목코드'])
@@ -114,16 +114,14 @@ if uploaded_file is not None:
             df['매수금액(KRW)'] = buying_values_krw
             df['평가금액(KRW)'] = eval_values_krw
             
-            # 개별 수익률 계산
+            # 개별 수익률 계산 (매수단가가 0인 경우 방어)
             df['수익률(%)'] = df.apply(lambda x: ((x['현재가(현지)'] - x['매수단가']) / x['매수단가'] * 100) if x['매수단가'] > 0 else 0, axis=1)
 
-            # ---------------------------------------------------------
-            # [추가된 기능] 전체 포트폴리오 요약 지표 계산
-            # ---------------------------------------------------------
-            total_buy_amt = df['매수금액(KRW)'].sum()       # 총 매수금액
-            total_eval_amt = df['평가금액(KRW)'].sum()      # 총 평가금액
-            total_profit = total_eval_amt - total_buy_amt   # 총 손익금
-            total_yield = (total_profit / total_buy_amt * 100) if total_buy_amt != 0 else 0 # 총 수익률
+            # 전체 포트폴리오 요약 지표 계산
+            total_buy_amt = df['매수금액(KRW)'].sum()
+            total_eval_amt = df['평가금액(KRW)'].sum()
+            total_profit = total_eval_amt - total_buy_amt
+            total_yield = (total_profit / total_buy_amt * 100) if total_buy_amt != 0 else 0
 
             # 3단 컬럼으로 지표 표시
             st.divider()
@@ -133,15 +131,12 @@ if uploaded_file is not None:
                 st.metric(label="총 매수금액", value=f"{total_buy_amt:,.0f} 원")
             
             with m2:
-                # delta를 사용하여 (+ 1,500,000 원) 처럼 표시
                 st.metric(label="총 평가금액", value=f"{total_eval_amt:,.0f} 원", delta=f"{total_profit:+,.0f} 원")
             
             with m3:
-                # delta를 사용하여 수익률 색상 표시
                 st.metric(label="총 수익률", value=f"{total_yield:,.2f} %", delta=f"{total_yield:,.2f} %")
             
             st.divider()
-            # ---------------------------------------------------------
 
             # 차트 영역
             c1, c2, c3 = st.columns(3)
@@ -152,24 +147,23 @@ if uploaded_file is not None:
             with c3:
                 st.plotly_chart(px.pie(df, values='평가금액(KRW)', names='국가', title="국가별 비중", color='국가', hole=0.3, color_discrete_map={'한국':'#00498c', '미국':'#bd081c'}), use_container_width=True)
 
-            # 상세 표
+            # 상세 표 (오류 원인이었던 background_gradient 제거함)
             st.subheader("📋 보유 종목 상세")
-            st.dataframe(df[['종목명', '국가', '수량', '매수단가', '현재가(현지)', '수익률(%)', '평가금액(KRW)']]
-                         .style.format({
-                             '매수단가': "{:,.2f}", 
-                             '현재가(현지)': "{:,.2f}", 
-                             '수익률(%)': "{:,.2f}%", 
-                             '평가금액(KRW)': "{:,.0f}"
-                         })
-                         # 수익률에 따라 색상 입히기 (옵션)
-                         .background_gradient(subset=['수익률(%)'], cmap='RdYlGn', vmin=-20, vmax=20),
-                         use_container_width=True)
+            st.dataframe(
+                df[['종목명', '국가', '수량', '매수단가', '현재가(현지)', '수익률(%)', '평가금액(KRW)']].style.format({
+                    '매수단가': "{:,.2f}", 
+                    '현재가(현지)': "{:,.2f}", 
+                    '수익률(%)': "{:,.2f}%", 
+                    '평가금액(KRW)': "{:,.0f}"
+                }),
+                use_container_width=True
+            )
 
         with tab2:
             st.write("업로드한 엑셀 파일의 내용입니다.")
             st.dataframe(df)
 
     except Exception as e:
-        st.error(f"파일을 읽는 중 오류가 발생했습니다: {e}")
+        st.error(f"오류가 발생했습니다. 내용을 확인해주세요: {e}")
 else:
     st.info("👆 위에서 엑셀 파일을 업로드하면 분석 결과가 여기에 나타납니다.")
