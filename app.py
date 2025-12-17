@@ -11,18 +11,20 @@ st.set_page_config(page_title="My Excel Portfolio", layout="wide", page_icon="�
 
 st.title("📊 엑셀 포트폴리오 뷰어")
 st.markdown("PC나 스마트폰에 있는 **엑셀 파일(.xlsx)**을 업로드하면 대시보드로 만들어줍니다.")
+st.info("💡 팁: 종목코드에 **KRW** 또는 **USD**를 입력하면 현금 자산으로 인식합니다.")
 
 # -----------------------------------------------------------------------------
 # 2. 엑셀 양식 다운로드 기능
 # -----------------------------------------------------------------------------
 def get_template_excel():
     data = {
-        '종목코드': ['000660.KS', 'IAU', 'SPLG'],
-        '종목명': ['SK하이닉스', 'iShares Gold', 'S&P 500'],
-        '업종': ['반도체', '원자재', '지수추종'],
-        '국가': ['한국', '미국', '미국'],
-        '수량': [10, 20, 15],
-        '매수단가': [180000, 53.50, 68.20]
+        '종목코드': ['000660.KS', 'IAU', 'SPLG', 'KRW', 'USD'],
+        '종목명': ['SK하이닉스', 'iShares Gold', 'S&P 500', '원화예수금', '달러예수금'],
+        '업종': ['반도체', '원자재', '지수추종', '현금', '현금'],
+        '국가': ['한국', '미국', '미국', '한국', '미국'],
+        '수량': [10, 20, 15, 1000000, 500],
+        '매수단가': [180000, 53.50, 68.20, 1, 1350] 
+        # KRW는 매수단가 1, USD는 매수 당시 환율(또는 1달러=1달러 관점이면 1)을 입력
     }
     df = pd.DataFrame(data)
     
@@ -88,24 +90,48 @@ if uploaded_file is not None:
             eval_values_krw = []
             buying_values_krw = []
             
-            for index, row in df.iterrows():
-                price = get_current_price(row['종목코드'])
-                current_prices.append(price)
-                
-                # 국가별 계산 (환율 적용)
-                if row['국가'] == '미국':
-                    # 미국 주식: 달러 * 환율
-                    eval_val = price * row['수량'] * usd_krw
-                    buy_val = row['매수단가'] * row['수량'] * usd_krw
-                else:
-                    # 한국 주식: 원화 그대로
-                    eval_val = price * row['수량']
-                    buy_val = row['매수단가'] * row['수량']
+            total_rows = len(df)
 
+            for index, row in df.iterrows():
+                ticker = str(row['종목코드']).upper().strip() # 대소문자 구분 없이 처리
+                
+                # --- [수정된 로직 시작] 현금(KRW/USD) vs 주식 구분 ---
+                if ticker == 'KRW':
+                    # 원화 현금: 현재가 1원, 평가금액 = 수량(금액) * 1
+                    price = 1.0
+                    eval_val = row['수량']  # 수량이 곧 원화 금액
+                    buy_val = row['수량'] * row['매수단가'] # 매수단가가 1이면 그대로, 아니면 입력값 따름
+                
+                elif ticker == 'USD':
+                    # 달러 현금: 현재가 = 환율, 평가금액 = 수량(달러) * 환율
+                    price = usd_krw
+                    eval_val = row['수량'] * usd_krw
+                    
+                    # USD 매수금액 처리 방식
+                    # 사용자가 매수단가에 '평균 환율'을 적었다면 환차익 계산 가능
+                    # 사용자가 매수단가에 '1'(달러)을 적었다면 현재 환율 기준으로 매수금액 산정(기존 주식 로직과 동일)
+                    if row['매수단가'] < 50: # 매수단가가 50 미만이면 1달러=1달러로 인식한다고 가정
+                         buy_val = row['매수단가'] * row['수량'] * usd_krw
+                    else: # 900원, 1300원 등 환율을 적었을 경우
+                         buy_val = row['매수단가'] * row['수량']
+
+                else:
+                    # 일반 주식: 야후 파이낸스 조회
+                    price = get_current_price(ticker)
+                    
+                    if row['국가'] == '미국':
+                        eval_val = price * row['수량'] * usd_krw
+                        buy_val = row['매수단가'] * row['수량'] * usd_krw
+                    else:
+                        eval_val = price * row['수량']
+                        buy_val = row['매수단가'] * row['수량']
+                # --- [수정된 로직 끝] ---
+
+                current_prices.append(price)
                 eval_values_krw.append(eval_val)
                 buying_values_krw.append(buy_val)
                 
-                progress_bar.progress((index + 1) / len(df))
+                progress_bar.progress((index + 1) / total_rows)
             
             progress_bar.empty()
 
@@ -114,8 +140,8 @@ if uploaded_file is not None:
             df['매수금액(KRW)'] = buying_values_krw
             df['평가금액(KRW)'] = eval_values_krw
             
-            # 개별 수익률 계산 (매수단가가 0인 경우 방어)
-            df['수익률(%)'] = df.apply(lambda x: ((x['현재가(현지)'] - x['매수단가']) / x['매수단가'] * 100) if x['매수단가'] > 0 else 0, axis=1)
+            # 개별 수익률 계산 (매수금액 0 방어)
+            df['수익률(%)'] = df.apply(lambda x: ((x['평가금액(KRW)'] - x['매수금액(KRW)']) / x['매수금액(KRW)'] * 100) if x['매수금액(KRW)'] > 0 else 0, axis=1)
 
             # 전체 포트폴리오 요약 지표 계산
             total_buy_amt = df['매수금액(KRW)'].sum()
@@ -143,12 +169,12 @@ if uploaded_file is not None:
             with c1:
                 st.plotly_chart(px.pie(df, values='평가금액(KRW)', names='업종', title="업종별 비중", hole=0.3), use_container_width=True)
             with c2:
-                st.plotly_chart(px.pie(df, values='평가금액(KRW)', names='종목명', title="종목별 비중", hole=0.3), use_container_width=True)
+                st.plotly_chart(px.pie(df, values='평가금액(KRW)', names='종목명', title="자산별 비중", hole=0.3), use_container_width=True)
             with c3:
                 st.plotly_chart(px.pie(df, values='평가금액(KRW)', names='국가', title="국가별 비중", color='국가', hole=0.3, color_discrete_map={'한국':'#00498c', '미국':'#bd081c'}), use_container_width=True)
 
-            # 상세 표 (오류 원인이었던 background_gradient 제거함)
-            st.subheader("📋 보유 종목 상세")
+            # 상세 표
+            st.subheader("📋 자산 상세 현황")
             st.dataframe(
                 df[['종목명', '국가', '수량', '매수단가', '현재가(현지)', '수익률(%)', '평가금액(KRW)']].style.format({
                     '매수단가': "{:,.2f}", 
