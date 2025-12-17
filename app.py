@@ -9,8 +9,8 @@ import io
 # -----------------------------------------------------------------------------
 st.set_page_config(page_title="My Excel Portfolio", layout="wide", page_icon="📊")
 
-st.title("📊 엑셀 포트폴리오 뷰어 v2.2 (Fix)")
-st.markdown("차트 중복 ID 에러 수정 및 UI 개선 버전입니다.")
+st.title("📊 엑셀 포트폴리오 뷰어 v2.4 (Final)")
+st.markdown("수익률 컬러 적용, 상세표 너비 꽉 채움, 차트 에러 수정 완료 버전입니다.")
 
 # -----------------------------------------------------------------------------
 # 2. 엑셀 양식 다운로드
@@ -39,7 +39,7 @@ with st.expander("⬇️ 엑셀 양식 다운로드"):
     )
 
 # -----------------------------------------------------------------------------
-# 3. 데이터 처리 및 ETF 분류 함수
+# 3. 데이터 처리 및 유틸리티 함수
 # -----------------------------------------------------------------------------
 @st.cache_data(ttl=60)
 def get_exchange_rate():
@@ -69,14 +69,20 @@ def classify_asset_type(row):
     
     if any(keyword in name for keyword in etf_keywords) or any(keyword in ticker for keyword in etf_keywords):
         return 'ETF'
-    
     return '개별주식'
 
-# 공통 차트 생성 함수 (탭 밖으로 뺌)
 def create_pie(data, names, title):
     fig = px.pie(data, values='평가금액', names=names, title=title, hole=0.4)
     fig.update_layout(margin=dict(t=30, b=0, l=0, r=0))
     return fig
+
+# [수익률 색상 함수]
+def color_profit(val):
+    if val > 0:
+        return 'color: #ff2b2b' # 빨강 (이익)
+    elif val < 0:
+        return 'color: #00498c' # 파랑 (손실)
+    return 'color: black'
 
 # -----------------------------------------------------------------------------
 # 4. 메인 로직
@@ -85,11 +91,10 @@ uploaded_file = st.file_uploader("📂 엑셀 파일을 업로드하세요", typ
 
 if uploaded_file is not None:
     try:
-        # 1) 데이터 로드
+        # 1) 데이터 로드 및 계산
         df = pd.read_excel(uploaded_file)
         usd_krw = get_exchange_rate()
         
-        # 2) 계산 로직
         current_prices = []
         eval_values = []
         buy_values = []
@@ -119,11 +124,10 @@ if uploaded_file is not None:
                 eval_values.append(eval_val)
                 buy_values.append(buy_val)
 
-        # 3) 데이터프레임 업데이트
         df['현재가'] = current_prices
         df['매수금액'] = buy_values
         df['평가금액'] = eval_values
-        df['수익률'] = df.apply(lambda x: ((x['평가금액'] - x['매수금액']) / x['매수금액']) if x['매수금액'] > 0 else 0, axis=1)
+        df['수익률'] = df.apply(lambda x: ((x['평가금액'] - x['매수금액']) / x['매수금액'] * 100) if x['매수금액'] > 0 else 0, axis=1)
         df['유형'] = df.apply(classify_asset_type, axis=1)
 
         # ---------------------------------------------------------------------
@@ -148,11 +152,9 @@ if uploaded_file is not None:
             st.divider()
 
             st.subheader("📈 포트폴리오 구성 (4 View)")
-            
             row1_col1, row1_col2 = st.columns(2)
             row2_col1, row2_col2 = st.columns(2)
             
-            # [수정된 부분] 각 차트에 key 값을 추가하여 에러 해결
             with row1_col1:
                 st.plotly_chart(create_pie(df, '종목명', "1. 종목별 비중"), use_container_width=True, key="chart_item")
             with row1_col2:
@@ -167,19 +169,25 @@ if uploaded_file is not None:
             st.subheader("📋 자산 상세")
             display_df = df[['종목명', '유형', '수량', '매수단가', '현재가', '수익률', '평가금액']].copy()
 
+            # [스타일링 적용] 색상 + 포맷팅
+            styled_df = display_df.style\
+                .format({
+                    '수량': '{:,.2f}', 
+                    '매수단가': '{:,.0f}',
+                    '현재가': '{:,.0f}',
+                    '수익률': '{:+.2f}%',  # + 부호 추가
+                    '평가금액': '{:,.0f}'
+                })\
+                .map(color_profit, subset=['수익률']) # 수익률 컬럼에 색상 적용
+
+            # [화면 꽉 채움] use_container_width=True 유지
             st.dataframe(
-                display_df,
-                column_config={
-                    "종목명": st.column_config.TextColumn("종목명", width="medium"),
-                    "유형": st.column_config.TextColumn("유형", width="small"),
-                    "수량": st.column_config.NumberColumn("수량", format="%.2f", width="small"),
-                    "매수단가": st.column_config.NumberColumn("매수단가", format="%d", width="small"),
-                    "현재가": st.column_config.NumberColumn("현재가", format="%d", width="small"),
-                    "수익률": st.column_config.NumberColumn("수익률", format="%.2f %%", width="small"),
-                    "평가금액": st.column_config.NumberColumn("평가금액 (KRW)", format="%d 원", width="medium"),
-                },
+                styled_df,
+                use_container_width=True,
                 hide_index=True,
-                use_container_width=False
+                column_config={
+                    "평가금액": st.column_config.NumberColumn("평가금액 (KRW)"), # 헤더 이름만 변경
+                }
             )
 
         # --- [TAB 2] 시뮬레이션 ---
@@ -189,6 +197,7 @@ if uploaded_file is not None:
             sim_df = df[['종목명', '유형', '현재가', '수량', '평가금액']].copy()
             sim_df.rename(columns={'수량': '현재 수량'}, inplace=True)
             
+            # 시뮬레이터도 화면 꽉 채움
             edited_df = st.data_editor(
                 sim_df,
                 column_config={
@@ -198,7 +207,7 @@ if uploaded_file is not None:
                     "시뮬레이션 수량": st.column_config.NumberColumn("목표 수량 (수정)", format="%.2f", min_value=0, step=1),
                 },
                 disabled=["종목명", "유형", "현재가", "현재 수량", "평가금액"],
-                use_container_width=False,
+                use_container_width=True,
                 hide_index=True
             )
 
@@ -211,7 +220,6 @@ if uploaded_file is not None:
             st.divider()
             
             col_sim1, col_sim2 = st.columns(2)
-            # [수정된 부분] 시뮬레이션 차트에도 key 값 추가
             with col_sim1:
                 st.markdown("**📉 현재 유형별 비중**")
                 st.plotly_chart(create_pie(sim_df, '유형', ''), use_container_width=True, key="sim_before")
