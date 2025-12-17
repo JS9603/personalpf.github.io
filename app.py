@@ -9,8 +9,8 @@ import io
 # -----------------------------------------------------------------------------
 st.set_page_config(page_title="My Excel Portfolio", layout="wide", page_icon="📊")
 
-st.title("📊 엑셀 포트폴리오 뷰어 v2.1")
-st.markdown("금액 정밀도 향상, 상세표 여백 제거, ETF 자동 분류 기능이 추가되었습니다.")
+st.title("📊 엑셀 포트폴리오 뷰어 v2.2 (Fix)")
+st.markdown("차트 중복 ID 에러 수정 및 UI 개선 버전입니다.")
 
 # -----------------------------------------------------------------------------
 # 2. 엑셀 양식 다운로드
@@ -54,27 +54,29 @@ def get_current_price(ticker):
     except:
         return 0.0
 
-# 종목명이나 코드를 기반으로 자산 유형(ETF vs 개별주 vs 현금)을 자동 분류하는 함수
 def classify_asset_type(row):
     name = str(row['종목명']).upper()
     ticker = str(row['종목코드']).upper()
     
-    # 1. 현금
     if ticker in ['KRW', 'USD'] or '예수금' in name:
         return '현금'
     
-    # 2. ETF 키워드 감지
     etf_keywords = [
-        'ETF', 'ETN', 'KODEX', 'TIGER', 'ACE', 'SOL', 'KBSTAR', 'HANARO', 'KOSEF', 'ARIRANG', # 한국
-        'ISHARES', 'SPDR', 'VANGUARD', 'INVESCO', 'PROSHARES', # 미국 운용사
-        'QQQ', 'SPY', 'SPLG', 'IAU', 'GLD', 'TLT', 'SHV', 'SOXL', 'TQQQ', 'JEPI', 'SCHD' # 주요 티커
+        'ETF', 'ETN', 'KODEX', 'TIGER', 'ACE', 'SOL', 'KBSTAR', 'HANARO', 'KOSEF', 'ARIRANG',
+        'ISHARES', 'SPDR', 'VANGUARD', 'INVESCO', 'PROSHARES',
+        'QQQ', 'SPY', 'SPLG', 'IAU', 'GLD', 'TLT', 'SHV', 'SOXL', 'TQQQ', 'JEPI', 'SCHD'
     ]
     
     if any(keyword in name for keyword in etf_keywords) or any(keyword in ticker for keyword in etf_keywords):
         return 'ETF'
     
-    # 3. 나머지는 개별 주식으로 간주
     return '개별주식'
+
+# 공통 차트 생성 함수 (탭 밖으로 뺌)
+def create_pie(data, names, title):
+    fig = px.pie(data, values='평가금액', names=names, title=title, hole=0.4)
+    fig.update_layout(margin=dict(t=30, b=0, l=0, r=0))
+    return fig
 
 # -----------------------------------------------------------------------------
 # 4. 메인 로직
@@ -96,7 +98,6 @@ if uploaded_file is not None:
             for index, row in df.iterrows():
                 ticker = str(row['종목코드']).upper().strip()
                 
-                # 가격 및 평가금액 계산
                 if ticker == 'KRW':
                     price = 1.0
                     eval_val = row['수량']
@@ -123,8 +124,6 @@ if uploaded_file is not None:
         df['매수금액'] = buy_values
         df['평가금액'] = eval_values
         df['수익률'] = df.apply(lambda x: ((x['평가금액'] - x['매수금액']) / x['매수금액']) if x['매수금액'] > 0 else 0, axis=1)
-        
-        # 4) 자산 유형 자동 분류 (ETF/주식/현금)
         df['유형'] = df.apply(classify_asset_type, axis=1)
 
         # ---------------------------------------------------------------------
@@ -134,7 +133,6 @@ if uploaded_file is not None:
 
         # --- [TAB 1] 대시보드 ---
         with tab1:
-            # 상단 요약 지표
             total_eval = df['평가금액'].sum()
             total_buy = df['매수금액'].sum()
             total_profit = total_eval - total_buy
@@ -142,7 +140,6 @@ if uploaded_file is not None:
             
             st.caption(f"기준 환율: 1 USD = {usd_krw:,.2f} KRW")
             
-            # 메트릭 표시 (천 단위 절사 없이 풀 텍스트)
             m1, m2, m3 = st.columns(3)
             m1.metric("총 매수금액", f"{total_buy:,.0f} 원")
             m2.metric("총 평가금액", f"{total_eval:,.0f} 원", f"{total_profit:+,.0f} 원")
@@ -150,54 +147,39 @@ if uploaded_file is not None:
             
             st.divider()
 
-            # -----------------------------------------------------------------
-            # [요청 3] 차트 4분할 (업종, 종목, 국가, 유형)
-            # -----------------------------------------------------------------
             st.subheader("📈 포트폴리오 구성 (4 View)")
             
-            # 2행 2열 그리드
             row1_col1, row1_col2 = st.columns(2)
             row2_col1, row2_col2 = st.columns(2)
             
-            # 공통 차트 설정
-            def create_pie(data, names, title):
-                fig = px.pie(data, values='평가금액', names=names, title=title, hole=0.4)
-                fig.update_layout(margin=dict(t=30, b=0, l=0, r=0)) # 여백 최소화
-                return fig
-
+            # [수정된 부분] 각 차트에 key 값을 추가하여 에러 해결
             with row1_col1:
-                st.plotly_chart(create_pie(df, '종목명', "1. 종목별 비중"), use_container_width=True)
+                st.plotly_chart(create_pie(df, '종목명', "1. 종목별 비중"), use_container_width=True, key="chart_item")
             with row1_col2:
-                st.plotly_chart(create_pie(df, '업종', "2. 업종별 비중"), use_container_width=True)
+                st.plotly_chart(create_pie(df, '업종', "2. 업종별 비중"), use_container_width=True, key="chart_sector")
             with row2_col1:
-                st.plotly_chart(create_pie(df, '국가', "3. 국가별 비중"), use_container_width=True)
+                st.plotly_chart(create_pie(df, '국가', "3. 국가별 비중"), use_container_width=True, key="chart_country")
             with row2_col2:
-                st.plotly_chart(create_pie(df, '유형', "4. 자산유형 비중 (ETF/주식/현금)"), use_container_width=True)
+                st.plotly_chart(create_pie(df, '유형', "4. 자산유형 비중"), use_container_width=True, key="chart_type")
 
             st.divider()
 
-            # -----------------------------------------------------------------
-            # [요청 2] 상세 테이블 (빈 공간 제거 & Compact)
-            # -----------------------------------------------------------------
             st.subheader("📋 자산 상세")
-
-            # 보여줄 컬럼 선택
             display_df = df[['종목명', '유형', '수량', '매수단가', '현재가', '수익률', '평가금액']].copy()
 
-            # [요청 1] 천단위 절사 없이 콤마만 찍기 & 수량 소수점 2자리
             st.dataframe(
                 display_df,
                 column_config={
                     "종목명": st.column_config.TextColumn("종목명", width="medium"),
                     "유형": st.column_config.TextColumn("유형", width="small"),
                     "수량": st.column_config.NumberColumn("수량", format="%.2f", width="small"),
-                    "매수단가": st.column_config.NumberColumn("매수단가", format="%d", width="small"), # %d: 정수 전체 표시
+                    "매수단가": st.column_config.NumberColumn("매수단가", format="%d", width="small"),
                     "현재가": st.column_config.NumberColumn("현재가", format="%d", width="small"),
-                    "수익률": st.column_config.NumberColumn("수익률", format="%.2f %%", width="small"), # % 표기
+                    "수익률": st.column_config.NumberColumn("수익률", format="%.2f %%", width="small"),
                     "평가금액": st.column_config.NumberColumn("평가금액 (KRW)", format="%d 원", width="medium"),
                 },
                 hide_index=True,
-                use_container_width=False  # 핵심: False로 설정하여 빈 공간 제거 (내용물만큼만 넓이 차지)
+                use_container_width=False
             )
 
         # --- [TAB 2] 시뮬레이션 ---
@@ -216,7 +198,7 @@ if uploaded_file is not None:
                     "시뮬레이션 수량": st.column_config.NumberColumn("목표 수량 (수정)", format="%.2f", min_value=0, step=1),
                 },
                 disabled=["종목명", "유형", "현재가", "현재 수량", "평가금액"],
-                use_container_width=False, # 여기도 Compact하게
+                use_container_width=False,
                 hide_index=True
             )
 
@@ -229,12 +211,13 @@ if uploaded_file is not None:
             st.divider()
             
             col_sim1, col_sim2 = st.columns(2)
+            # [수정된 부분] 시뮬레이션 차트에도 key 값 추가
             with col_sim1:
                 st.markdown("**📉 현재 유형별 비중**")
-                st.plotly_chart(create_pie(sim_df, '유형', ''), use_container_width=True)
+                st.plotly_chart(create_pie(sim_df, '유형', ''), use_container_width=True, key="sim_before")
             with col_sim2:
                 st.markdown("**📈 시뮬레이션 후 유형별 비중**")
-                st.plotly_chart(create_pie(edited_df, '유형', ''), use_container_width=True)
+                st.plotly_chart(create_pie(edited_df, '유형', ''), use_container_width=True, key="sim_after")
             
             st.success(f"💰 시뮬레이션 총 자산: **{new_total:,.0f} 원**")
 
