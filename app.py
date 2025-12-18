@@ -371,10 +371,24 @@ if uploaded_file is not None:
                 if info: st.session_state['search_info'] = info
                 else: st.error("종목을 찾을 수 없습니다.")
             
+            # --- [수정 시작] 검색 결과 표(DataFrame)로 변경 ---
             if st.session_state['search_info']:
                 inf = st.session_state['search_info']
-                st.success(f"검색 성공: **{inf['종목명']}** ({inf['종목코드']})")
-                st.write(f"현재가: {inf['현재가']:,.0f}원")
+                
+                # 표 출력을 위한 데이터프레임 생성
+                search_res_df = pd.DataFrame([{
+                    '종목코드': inf['종목코드'],
+                    '종목명': inf['종목명'],
+                    '현재가': inf['현재가']
+                }])
+
+                # 깔끔한 표로 출력 (인덱스 숨김, 현재가 포맷팅)
+                st.dataframe(
+                    search_res_df.style.format({'현재가': '{:,.0f} 원'}),
+                    hide_index=True,
+                    use_container_width=True
+                )
+                
                 if st.button("리스트에 추가"):
                     new_row = {
                         '종목코드': inf['종목코드'], '종목명': inf['종목명'], '업종': inf['업종'],
@@ -385,6 +399,7 @@ if uploaded_file is not None:
                     st.session_state['sim_df'] = pd.concat([sim_df, pd.DataFrame([new_row])], ignore_index=True)
                     st.session_state['search_info'] = None
                     st.rerun()
+            # --- [수정 끝] ---
 
         edited = st.data_editor(
             sim_df[['종목명', '종목코드', '현재가', '시뮬레이션 수량']],
