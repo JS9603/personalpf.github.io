@@ -27,8 +27,8 @@ if 'sim_df' not in st.session_state:
 # 상단 헤더
 col_title, col_time = st.columns([0.7, 0.3])
 with col_title:
-    st.title("🏦 포트폴리오 매니저 v4.9.4")
-    st.markdown("정보 수급처 변경")
+    st.title("🏦 포트폴리오 매니저 v4.9.5")
+    st.markdown("Rebalance Plan")
 with col_time:
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     st.write("") 
@@ -253,7 +253,6 @@ if uploaded_file is not None:
         
         st.divider()
         
-        # [Fix] 각 차트마다 고유 key 추가
         r1_c1, r1_c2 = st.columns(2)
         with r1_c1: st.plotly_chart(create_pie(all_df, '종목명', "1. 종목별 비중"), use_container_width=True, key='t1_c1')
         with r1_c2: st.plotly_chart(create_pie(all_df, '업종', "2. 업종(섹터)별 비중"), use_container_width=True, key='t1_c2')
@@ -286,7 +285,6 @@ if uploaded_file is not None:
         
         st.divider()
         
-        # [Fix] 각 차트마다 고유 key 추가
         c1, c2 = st.columns(2)
         with c1: st.plotly_chart(create_pie(target_df, '종목명', "1. 종목 비중"), use_container_width=True, key='t2_c1')
         with c2: st.plotly_chart(create_pie(target_df, '유형', "2. 유형 비중"), use_container_width=True, key='t2_c2')
@@ -345,13 +343,28 @@ if uploaded_file is not None:
         
         sim_df.update(edited)
         
-        def calc_sim(row):
+        # --- 계산 로직 ---
+        # 1. 예상 평가금액 (총액)
+        def calc_sim_total(row):
             p, q = row['현재가'], row['시뮬레이션 수량']
             if row['통화'] == 'USD' or row['국가'] == '미국':
                 return p * q * usd_krw
             return p * q
-            
-        sim_df['예상 평가금액'] = sim_df.apply(calc_sim, axis=1)
+        
+        sim_df['예상 평가금액'] = sim_df.apply(calc_sim_total, axis=1)
+        
+        # 2. 매수/매도 필요 금액 (차액)
+        sim_df['수량변동'] = sim_df['시뮬레이션 수량'] - sim_df['수량']
+        def calc_diff_amt(row):
+            p = row['현재가']
+            q_diff = row['수량변동']
+            # USD인 경우 환율 적용
+            if row['통화'] == 'USD' or row['국가'] == '미국':
+                return p * q_diff * usd_krw
+            return p * q_diff
+
+        sim_df['매매금액'] = sim_df.apply(calc_diff_amt, axis=1)
+        
         sim_total = sim_df['예상 평가금액'].sum()
         diff = cur_total - sim_total
         
@@ -360,14 +373,36 @@ if uploaded_file is not None:
         with c_res1:
             st.metric("현재 자산", f"{cur_total:,.0f} 원")
             st.metric("시뮬레이션 후", f"{sim_total:,.0f} 원")
-            if diff >= 0: st.success(f"잔액: {diff:,.0f} 원")
-            else: st.error(f"부족: {abs(diff):,.0f} 원")
+            if diff >= 0: st.success(f"잔액 (확보): {diff:,.0f} 원")
+            else: st.error(f"부족 (필요): {abs(diff):,.0f} 원")
         
-        st.markdown("##### 📈 시뮬레이션 결과 분석")
+        # --- [NEW] 리밸런싱 매매 계획표 ---
+        st.markdown("##### 📝 리밸런싱 매매 계획표")
+        
+        # 변동이 있는 종목만 필터링
+        plan_df = sim_df[sim_df['수량변동'] != 0].copy()
+        
+        if not plan_df.empty:
+            # 표시용 컬럼 정리
+            plan_df['구분'] = plan_df['수량변동'].apply(lambda x: '매수 (BUY)' if x > 0 else '매도 (SELL)')
+            plan_display = plan_df[['종목명', '구분', '수량', '시뮬레이션 수량', '수량변동', '매매금액']].copy()
+            plan_display.columns = ['종목명', '구분', '현재수량', '목표수량', '변동수량', '예상 소요금액']
+            
+            # 스타일링 (매수는 빨강, 매도는 파랑)
+            st.dataframe(
+                plan_display.style.format({
+                    '현재수량': '{:,.2f}', '목표수량': '{:,.2f}', '변동수량': '{:+,.2f}', '예상 소요금액': '{:+,.0f} 원'
+                }).map(lambda x: 'color: #ff2b2b' if x > 0 else 'color: #00498c', subset=['변동수량', '예상 소요금액']),
+                use_container_width=True, hide_index=True
+            )
+        else:
+            st.info("💡 수량 변동 사항이 없습니다. 위의 표에서 '목표 수량'을 변경해보세요.")
+
+        st.divider()
+        st.markdown("##### 📈 시뮬레이션 결과 차트")
         c1, c2, c3 = st.columns(3)
         valid_sim = sim_df[sim_df['예상 평가금액'] > 0]
         
-        # [Fix] 각 차트마다 고유 key 추가 (에러 발생했던 지점)
         with c1: st.plotly_chart(create_pie(valid_sim, '종목명', "1. 종목 비중"), use_container_width=True, key='t3_c1')
         with c2: st.plotly_chart(create_pie(valid_sim, '업종', "2. 업종 비중"), use_container_width=True, key='t3_c2')
         with c3: st.plotly_chart(create_pie(valid_sim, '유형', "3. 유형 비중"), use_container_width=True, key='t3_c3')
