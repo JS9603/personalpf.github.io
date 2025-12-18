@@ -3,6 +3,7 @@ import pandas as pd
 import yfinance as yf
 import plotly.express as px
 import io
+from datetime import datetime  # [추가] 시간 표시를 위한 모듈
 
 # -----------------------------------------------------------------------------
 # 1. 페이지 설정 및 세션 초기화
@@ -21,8 +22,18 @@ if 'sim_target_sheet' not in st.session_state:
 if 'sim_df' not in st.session_state:
     st.session_state['sim_df'] = None
 
-st.title("🏦 포트폴리오 매니저 v4.6")
-st.markdown("시뮬레이션 기능개선")
+# [수정] 상단 레이아웃: 제목과 갱신 시간을 좌우로 배치
+col_title, col_time = st.columns([0.8, 0.2])
+
+with col_title:
+    st.title("🏦 포트폴리오 매니저 v4.6")
+    st.markdown("시뮬레이션 기능개선")
+
+with col_time:
+    # 현재 시간 가져오기
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    st.write("") # 줄바꿈으로 높이 조절
+    st.caption(f"🕒 데이터 갱신:\n{now_str}")
 
 # -----------------------------------------------------------------------------
 # 2. 유틸리티 함수 & 한글 종목명 매핑
@@ -81,7 +92,7 @@ def get_stock_info(ticker):
         return {
             '종목코드': ticker,
             '종목명': korean_name, 
-            '업종': info.get('sector', '기타'), # [복구] 업종 정보 가져오기
+            '업종': info.get('sector', '기타'), 
             '국가': '한국' if is_korea else '미국',
             '유형': 'ETF' if info.get('quoteType') == 'ETF' else '개별주식',
             '현재가': current_price,
@@ -144,7 +155,6 @@ def calculate_portfolio(df, usd_krw):
     df['유형'] = df.apply(classify_asset_type_initial, axis=1)
     df['통화'] = currencies
     
-    # [수정] 업종 컬럼이 없으면 '기타'로 초기화 (수동 입력을 위해)
     if '업종' not in df.columns:
         df['업종'] = '기타'
         
@@ -158,7 +168,6 @@ def calculate_portfolio(df, usd_krw):
 def get_template_excel():
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        # [수정] 엑셀 양식에 '업종' 컬럼 다시 추가 (사용자 편의)
         df1 = pd.DataFrame({'종목코드': ['000660.KS', 'KRW'], '종목명': ['SK하이닉스', '원화예수금'], '업종': ['반도체', '현금'], '국가': ['한국', '한국'], '수량': [10, 1000000], '매수단가': [180000, 1]})
         df1.to_excel(writer, index=False, sheet_name='국내계좌')
         df2 = pd.DataFrame({'종목코드': ['SPLG', 'USD'], '종목명': ['S&P 500', '달러예수금'], '업종': ['지수추종', '현금'], '국가': ['미국', '미국'], '수량': [15, 500], '매수단가': [68.20, 1]})
@@ -312,16 +321,17 @@ if uploaded_file is not None:
                 preview_df = pd.DataFrame([{
                     '코드': info['종목코드'],
                     '종목명': info['종목명'],
-                    '업종': info['업종'],
+                    '업종': info.get('업종', '기타'),
                     '현재가': info['현재가']
                 }])
                 st.markdown("##### 🔎 검색 결과")
                 st.dataframe(preview_df.style.format({'현재가': '{:,.0f}'}), hide_index=True, use_container_width=True)
                 
                 if st.button("적용", type="primary"):
+                    # [수정] KeyError 방지를 위해 .get() 메서드 사용
                     new_row = {
                         '종목코드': info['종목코드'], '종목명': info['종목명'], 
-                        '업종': info['업종'], # [복구] 시뮬레이션에선 업종 사용
+                        '업종': info.get('업종', '기타'), # [수정] KeyError 안전 장치
                         '국가': info['국가'], '유형': info['유형'], '수량': 0, '매수단가': 0,
                         '현재가': info['현재가'], '매수금액': 0, '평가금액': 0, '수익률': 0,
                         '통화': info['currency'], '시뮬레이션 수량': 0, '계좌명': selected_sim_sheet
@@ -332,14 +342,13 @@ if uploaded_file is not None:
 
         st.divider()
 
-        # [수정] 업종 컬럼 추가 및 수정 가능하도록 설정
         sim_view_cols = ['종목코드', '종목명', '업종', '유형', '통화', '현재가', '시뮬레이션 수량']
         edited_df = st.data_editor(
             sim_df[sim_view_cols],
             column_config={
                 "종목코드": st.column_config.TextColumn("코드", disabled=True),
                 "종목명": st.column_config.TextColumn("종목명 (수정가능)"),
-                "업종": st.column_config.TextColumn("업종 (수정가능)"), # [NEW]
+                "업종": st.column_config.TextColumn("업종 (수정가능)"),
                 "현재가": st.column_config.NumberColumn("단가", format="%d"),
                 "시뮬레이션 수량": st.column_config.NumberColumn("목표수량", format="%.2f", min_value=0, step=1)
             },
@@ -359,7 +368,6 @@ if uploaded_file is not None:
 
         sim_result_df['예상 평가금액'] = sim_result_df.apply(calc_sim_eval, axis=1)
         
-        # 메타데이터 복원 (업종은 위에서 사용자가 편집한 값 그대로 사용)
         meta_lookup = sim_df.set_index('종목코드')[['국가']].to_dict('index')
         sim_result_df['국가'] = sim_result_df.apply(lambda x: meta_lookup.get(x.get('종목코드'), {}).get('국가', '기타'), axis=1)
         if '유형' not in sim_result_df.columns:
@@ -382,7 +390,6 @@ if uploaded_file is not None:
             if not sim_result_df.empty:
                 t1, t2 = st.tabs(["차트", "데이터"])
                 with t1:
-                    # [수정] 차트 구성: 종목 / 업종(NEW) / 유형
                     c1, c2, c3 = st.columns(3)
                     with c1: st.plotly_chart(create_pie(sim_result_df, '종목명', "1. 종목", '예상 평가금액'), use_container_width=True, key='s1')
                     with c2: st.plotly_chart(create_pie(sim_result_df, '업종', "2. 업종", '예상 평가금액'), use_container_width=True, key='s2')
