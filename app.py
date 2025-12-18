@@ -26,7 +26,6 @@ if 'last_refresh_count' not in st.session_state:
 if refresh_count != st.session_state['last_refresh_count']:
     st.session_state['last_refresh_count'] = refresh_count
     st.session_state['portfolio_data'] = None
-    # [수정] 아이콘 에러 해결 (텍스트 대신 이모지 사용)
     st.toast('데이터가 최신 시세로 업데이트되었습니다.', icon='🔄')
 
 if 'search_info' not in st.session_state:
@@ -42,7 +41,7 @@ if 'sim_df' not in st.session_state:
 col_title, col_time = st.columns([0.7, 0.3])
 with col_title:
     st.title("🏦 포트폴리오 매니저 v5.3")
-    st.markdown("Final Fix")
+    st.markdown("Final Fix (한글명 우선 적용)")
 with col_time:
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     st.write("") 
@@ -91,6 +90,9 @@ US_STOCK_MAP = {
     'IAU': 'IAU', '금': 'IAU', '골드': 'IAU', 'GLD': 'GLD' 
 }
 
+# [추가] 종목코드 -> 한글명 역매핑 (한글 표시용)
+TICKER_TO_KOREAN = {v: k for k, v in US_STOCK_MAP.items()}
+
 def resolve_ticker(input_str):
     input_str = input_str.strip()
     if input_str in US_STOCK_MAP:
@@ -130,10 +132,24 @@ def get_stock_info_safe(input_str):
 
         try:
             info = yf.Ticker(ticker).info
+            # 1차 시도: yfinance에서 이름 가져오기 (보통 영어)
             name = info.get('shortName', ticker)
-            sector = info.get('sector', '기타')
             
-            # [수정] SyntaxError가 발생했던 부분 수정 완료
+            # [수정] 한글명 우선 적용 로직
+            # 1. 우리가 정의한 맵에 있는 경우 (예: AAPL -> 애플)
+            if ticker in TICKER_TO_KOREAN:
+                name = TICKER_TO_KOREAN[ticker]
+            
+            # 2. 한국 주식인 경우 KRX 데이터에서 한글명 찾기
+            elif is_korean:
+                clean_code = ticker.split('.')[0]
+                krx_map = get_krx_code_map()
+                # krx_map은 Name:Code 형태이므로 뒤집어서 검색
+                code_to_name = {v: k for k, v in krx_map.items()}
+                if clean_code in code_to_name:
+                    name = code_to_name[clean_code]
+
+            sector = info.get('sector', '기타')
             asset_type = 'ETF' if info.get('quoteType') == 'ETF' else '개별주식'
 
             return {
@@ -188,8 +204,13 @@ def calculate_portfolio(df, usd_krw):
         
         current_name = str(row.get('종목명', ''))
         clean_code = ticker.split('.')[0]
-        if (not current_name or current_name == 'nan') and clean_code in code_to_name:
-             df.at[index, '종목명'] = code_to_name[clean_code]
+        
+        # [수정] 엑셀에 이름이 비어있으면 한글명으로 채우기 시도
+        if not current_name or current_name == 'nan':
+            if clean_code in code_to_name:
+                df.at[index, '종목명'] = code_to_name[clean_code]
+            elif ticker in TICKER_TO_KOREAN:
+                df.at[index, '종목명'] = TICKER_TO_KOREAN[ticker]
 
         qty = float(row['수량'])
         avg_price = float(row['매수단가'])
@@ -305,7 +326,6 @@ if uploaded_file is not None:
         m3.metric("총 수익률", f"{yield_rate:.2f} %", f"{yield_rate:.2f} %")
         st.divider()
         
-        # [수정] 키(key) 충돌 방지
         r1_c1, r1_c2 = st.columns(2)
         with r1_c1: st.plotly_chart(create_pie(all_df, '종목명', "1. 종목별 비중"), use_container_width=True, key='t1_c1')
         with r1_c2: st.plotly_chart(create_pie(all_df, '업종', "2. 업종(섹터)별 비중"), use_container_width=True, key='t1_c2')
@@ -336,7 +356,6 @@ if uploaded_file is not None:
         m1.metric("계좌 평가금액", f"{t_eval:,.0f} 원", f"{t_profit:+,.0f} 원")
         st.divider()
         
-        # [수정] 키(key) 충돌 방지
         c1, c2 = st.columns(2)
         with c1: st.plotly_chart(create_pie(target_df, '종목명', "1. 종목 비중"), use_container_width=True, key='t2_c1')
         with c2: st.plotly_chart(create_pie(target_df, '유형', "2. 유형 비중"), use_container_width=True, key='t2_c2')
@@ -371,18 +390,15 @@ if uploaded_file is not None:
                 if info: st.session_state['search_info'] = info
                 else: st.error("종목을 찾을 수 없습니다.")
             
-            # --- [수정 시작] 검색 결과 표(DataFrame)로 변경 ---
             if st.session_state['search_info']:
                 inf = st.session_state['search_info']
                 
-                # 표 출력을 위한 데이터프레임 생성
                 search_res_df = pd.DataFrame([{
                     '종목코드': inf['종목코드'],
                     '종목명': inf['종목명'],
                     '현재가': inf['현재가']
                 }])
 
-                # 깔끔한 표로 출력 (인덱스 숨김, 현재가 포맷팅)
                 st.dataframe(
                     search_res_df.style.format({'현재가': '{:,.0f} 원'}),
                     hide_index=True,
@@ -399,7 +415,6 @@ if uploaded_file is not None:
                     st.session_state['sim_df'] = pd.concat([sim_df, pd.DataFrame([new_row])], ignore_index=True)
                     st.session_state['search_info'] = None
                     st.rerun()
-            # --- [수정 끝] ---
 
         edited = st.data_editor(
             sim_df[['종목명', '종목코드', '현재가', '시뮬레이션 수량']],
@@ -461,7 +476,6 @@ if uploaded_file is not None:
         st.divider()
         c1, c2, c3 = st.columns(3)
         valid_sim = sim_df[sim_df['예상 평가금액'] > 0]
-        # [수정] 키(key) 충돌 방지
         with c1: st.plotly_chart(create_pie(valid_sim, '종목명', "1. 종목 비중"), use_container_width=True, key='t3_c1')
         with c2: st.plotly_chart(create_pie(valid_sim, '업종', "2. 업종 비중"), use_container_width=True, key='t3_c2')
         with c3: st.plotly_chart(create_pie(valid_sim, '유형', "3. 유형 비중"), use_container_width=True, key='t3_c3')
