@@ -40,8 +40,8 @@ if 'sim_df' not in st.session_state:
 # 상단 헤더
 col_title, col_time = st.columns([0.7, 0.3])
 with col_title:
-    st.title("🏦 포트폴리오 매니저 v5.3")
-    st.markdown("Final Fix (한글명 우선 적용)")
+    st.title("🏦 포트폴리오 매니저 v5.4")
+    st.markdown("Final Fix (한글 종목명 표시 수정)")
 with col_time:
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     st.write("") 
@@ -74,12 +74,14 @@ def get_all_exchange_rates():
 @st.cache_data(ttl=3600*24)
 def get_krx_code_map():
     try:
+        # KRX 전체 리스트 가져오기 (이름 -> 코드)
         df = fdr.StockListing('KRX')
         name_to_code = dict(zip(df['Name'], df['Code']))
         return name_to_code
     except:
         return {}
 
+# 미국 주식 한글 매핑 (필요시 추가)
 US_STOCK_MAP = {
     '애플': 'AAPL', '마이크로소프트': 'MSFT', '테슬라': 'TSLA', '엔비디아': 'NVDA',
     '구글': 'GOOGL', '아마존': 'AMZN', '메타': 'META', '넷플릭스': 'NFLX',
@@ -90,21 +92,26 @@ US_STOCK_MAP = {
     'IAU': 'IAU', '금': 'IAU', '골드': 'IAU', 'GLD': 'GLD' 
 }
 
-# [추가] 종목코드 -> 한글명 역매핑 (한글 표시용)
+# 종목코드 -> 한글명 역매핑 (미국주식용)
 TICKER_TO_KOREAN = {v: k for k, v in US_STOCK_MAP.items()}
 
 def resolve_ticker(input_str):
-    input_str = input_str.strip()
+    input_str = str(input_str).strip()
+    # 1. 미국 주식 한글명 맵핑 확인
     if input_str in US_STOCK_MAP:
         return US_STOCK_MAP[input_str]
+    
+    # 2. 한국 주식 이름 확인 (삼성전자 -> 005930)
     krx_map = get_krx_code_map()
     if input_str in krx_map:
         return krx_map[input_str]
+        
     return input_str.upper()
 
 def get_current_price(ticker):
     ticker = str(ticker).strip().upper()
     try:
+        # 한국 주식 (6자리 숫자)
         if (ticker.isdigit() and len(ticker) == 6) or ticker.endswith('.KS') or ticker.endswith('.KQ'):
             code = ticker.split('.')[0]
             df = fdr.DataReader(code)
@@ -112,6 +119,7 @@ def get_current_price(ticker):
                 return df['Close'].iloc[-1]
             return 0.0
         else:
+            # 미국 주식
             ticker_obj = yf.Ticker(ticker)
             hist = ticker_obj.history(period="1d")
             if not hist.empty:
@@ -121,7 +129,9 @@ def get_current_price(ticker):
         return 0.0
 
 def get_stock_info_safe(input_str):
+    # 1. 티커 변환 (삼성전자 -> 005930)
     ticker = resolve_ticker(str(input_str))
+    
     try:
         price = get_current_price(ticker)
         if price == 0: return None
@@ -130,42 +140,51 @@ def get_stock_info_safe(input_str):
         country = '한국' if is_korean else '미국'
         currency = 'KRW' if is_korean else 'USD'
 
+        # --- [수정 핵심] 종목명 결정 로직 강화 ---
+        name = ticker  # 기본값은 티커
+        sector = '기타'
+        asset_type = '기타'
+
         try:
-            info = yf.Ticker(ticker).info
-            # 1차 시도: yfinance에서 이름 가져오기 (보통 영어)
-            name = info.get('shortName', ticker)
-            
-            # [수정] 한글명 우선 적용 로직
-            # 1. 우리가 정의한 맵에 있는 경우 (예: AAPL -> 애플)
-            if ticker in TICKER_TO_KOREAN:
-                name = TICKER_TO_KOREAN[ticker]
-            
-            # 2. 한국 주식인 경우 KRX 데이터에서 한글명 찾기
-            elif is_korean:
+            # [한국 주식 이름 찾기]
+            if is_korean:
                 clean_code = ticker.split('.')[0]
-                krx_map = get_krx_code_map()
-                # krx_map은 Name:Code 형태이므로 뒤집어서 검색
+                krx_map = get_krx_code_map() # {Name: Code}
+                # Code -> Name 역매핑 생성
                 code_to_name = {v: k for k, v in krx_map.items()}
+                
                 if clean_code in code_to_name:
-                    name = code_to_name[clean_code]
-
-            sector = info.get('sector', '기타')
-            asset_type = 'ETF' if info.get('quoteType') == 'ETF' else '개별주식'
-
-            return {
-                '종목코드': ticker, 
-                '종목명': name,
-                '업종': sector, 
-                '현재가': price,
-                '국가': country,
-                '유형': asset_type,
-                'currency': currency
-            }
+                    name = code_to_name[clean_code] # 005930 -> 삼성전자
+                else:
+                    # 맵에 없지만 사용자가 한글로 검색했다면 그 입력값 사용
+                    if not input_str.isdigit() and not input_str.encode().isalpha():
+                        name = input_str
+            
+            # [미국 주식 이름 찾기]
+            else:
+                if ticker in TICKER_TO_KOREAN:
+                    name = TICKER_TO_KOREAN[ticker] # AAPL -> 애플
+                else:
+                    # yfinance로 정보 조회
+                    info = yf.Ticker(ticker).info
+                    name = info.get('shortName', ticker)
+                    sector = info.get('sector', '기타')
+                    asset_type = 'ETF' if info.get('quoteType') == 'ETF' else '개별주식'
+                    
         except:
-            return {
-                '종목코드': ticker, '종목명': ticker, '업종': '기타', '현재가': price,
-                '국가': country, '유형': '기타', 'currency': currency
-            }
+            # 오류 발생 시 사용자 입력값이 한글이면 그걸 이름으로 씀
+            if not input_str.isdigit() and not input_str.encode().isalpha():
+                name = input_str
+
+        return {
+            '종목코드': ticker, 
+            '종목명': name,
+            '업종': sector, 
+            '현재가': price,
+            '국가': country,
+            '유형': asset_type,
+            'currency': currency
+        }
     except:
         return None
 
@@ -205,7 +224,7 @@ def calculate_portfolio(df, usd_krw):
         current_name = str(row.get('종목명', ''))
         clean_code = ticker.split('.')[0]
         
-        # [수정] 엑셀에 이름이 비어있으면 한글명으로 채우기 시도
+        # 엑셀 파일 로드 시 이름 비어있으면 채우기
         if not current_name or current_name == 'nan':
             if clean_code in code_to_name:
                 df.at[index, '종목명'] = code_to_name[clean_code]
