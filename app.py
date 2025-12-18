@@ -21,7 +21,7 @@ if 'sim_target_sheet' not in st.session_state:
 if 'sim_df' not in st.session_state:
     st.session_state['sim_df'] = None
 
-st.title("개인 포트폴리오 관리 프로그램 v4.1")
+st.title("개인 포트폴리오 관리 프로그램 v4.2")
 st.markdown("멀티 어카운트 기능추가, 포트폴리오 시뮬레이션 기능추가")
 
 # -----------------------------------------------------------------------------
@@ -192,11 +192,8 @@ if uploaded_file is not None:
         with r2c1: st.plotly_chart(create_pie(all_df, '국가', "3. 국가별 비중"), use_container_width=True, key='all_c3')
         with r2c2: st.plotly_chart(create_pie(all_df, '유형', "4. 유형별 비중"), use_container_width=True, key='all_c4')
 
-        # [추가됨] 통합 자산 상세 테이블
         st.divider()
         st.subheader("📋 통합 자산 상세")
-        
-        # '계좌명'을 맨 앞으로
         summary_cols = ['계좌명', '종목명', '유형', '수량', '매수단가', '현재가', '수익률', '평가금액']
         summary_display = all_df[summary_cols].copy()
         
@@ -263,10 +260,26 @@ if uploaded_file is not None:
                     if info: st.session_state['search_info'] = info
                     else: st.error("종목 없음")
             
+            # [수정] 검색 결과 표 형식 출력
             if st.session_state['search_info']:
                 info = st.session_state['search_info']
-                st.info(f"확인: {info['종목명']} ({info['현재가']:,.0f})")
-                if st.button("추가 확인"):
+                
+                # 표 데이터 생성
+                preview_df = pd.DataFrame([{
+                    '코드': info['종목코드'],
+                    '종목명': info['종목명'],
+                    '업종': info['업종'],
+                    '현재가': info['현재가']
+                }])
+                
+                st.markdown("##### 🔎 검색 결과")
+                st.dataframe(
+                    preview_df.style.format({'현재가': '{:,.0f}'}),
+                    hide_index=True,
+                    use_container_width=True
+                )
+                
+                if st.button("적용", type="primary"):
                     new_row = {
                         '종목코드': info['종목코드'], '종목명': info['종목명'], '업종': info['업종'],
                         '국가': info['국가'], '유형': info['유형'], '수량': 0, '매수단가': 0,
