@@ -12,8 +12,8 @@ st.set_page_config(page_title="My Portfolio Simulator", layout="wide", page_icon
 if 'sim_data' not in st.session_state:
     st.session_state['sim_data'] = None
 
-st.title("📈 포트폴리오 시뮬레이터 v3.5")
-st.markdown("시뮬레이션 기능추가, 검색기능 추가.")
+st.title("📈 포트폴리오 시뮬레이터 v3.6")
+st.markdown("시뮬레이션 기능추가, 검색기능 추가")
 
 # -----------------------------------------------------------------------------
 # 2. 유틸리티 함수
@@ -57,9 +57,13 @@ def classify_asset_type_initial(row):
     if any(k in name for k in etf_keywords) or any(k in ticker for k in etf_keywords): return 'ETF'
     return '개별주식'
 
-def create_pie(data, names, title):
+# [수정됨] value_col 인자를 추가하여 '예상 평가금액'도 처리 가능하게 변경
+def create_pie(data, names, title, value_col='평가금액'):
     if data.empty: return None
-    fig = px.pie(data, values='평가금액', names=names, title=title, hole=0.4)
+    # 컬럼이 있는지 확인 (에러 방지)
+    if value_col not in data.columns: return None
+    
+    fig = px.pie(data, values=value_col, names=names, title=title, hole=0.4)
     fig.update_layout(margin=dict(t=30, b=0, l=0, r=0))
     return fig
 
@@ -163,10 +167,11 @@ if uploaded_file is not None:
         st.subheader("📈 포트폴리오 구성")
         r1c1, r1c2 = st.columns(2)
         r2c1, r2c2 = st.columns(2)
-        with r1c1: st.plotly_chart(create_pie(df_dashboard, '종목명', "1. 종목별"), use_container_width=True, key='d1')
-        with r1c2: st.plotly_chart(create_pie(df_dashboard, '업종', "2. 업종별"), use_container_width=True, key='d2')
-        with r2c1: st.plotly_chart(create_pie(df_dashboard, '국가', "3. 국가별"), use_container_width=True, key='d3')
-        with r2c2: st.plotly_chart(create_pie(df_dashboard, '유형', "4. 유형별"), use_container_width=True, key='d4')
+        # [수정됨] key 값을 명확하게 부여
+        with r1c1: st.plotly_chart(create_pie(df_dashboard, '종목명', "1. 종목별"), use_container_width=True, key='chart_dash_1')
+        with r1c2: st.plotly_chart(create_pie(df_dashboard, '업종', "2. 업종별"), use_container_width=True, key='chart_dash_2')
+        with r2c1: st.plotly_chart(create_pie(df_dashboard, '국가', "3. 국가별"), use_container_width=True, key='chart_dash_3')
+        with r2c2: st.plotly_chart(create_pie(df_dashboard, '유형', "4. 유형별"), use_container_width=True, key='chart_dash_4')
 
         st.divider()
         st.subheader("📋 자산 상세")
@@ -220,7 +225,7 @@ if uploaded_file is not None:
         )
 
         # ---------------------------------------------------------------------
-        # [수정됨] 재계산 로직: 달러 현금 중복 계산 방지
+        # 재계산 로직
         # ---------------------------------------------------------------------
         sim_result_df = edited_df.copy()
 
@@ -230,14 +235,8 @@ if uploaded_file is not None:
             code = str(row.get('종목코드', '')).upper()
             currency = row.get('통화', 'KRW')
             
-            # [버그 수정] 종목코드가 USD(달러현금)인 경우, 이미 price가 환율이므로 또 환율을 곱하면 안됨
-            if code == 'USD':
-                return price * qty
-            
-            # 일반 미국 주식인 경우 환율 곱하기
-            if currency == 'USD':
-                return price * qty * usd_krw
-            
+            if code == 'USD': return price * qty
+            if currency == 'USD': return price * qty * usd_krw
             return price * qty
 
         sim_result_df['예상 평가금액'] = sim_result_df.apply(calc_sim_eval, axis=1)
@@ -247,8 +246,7 @@ if uploaded_file is not None:
         
         def get_meta(row, col):
             code = row.get('종목코드')
-            if code in meta_lookup:
-                return meta_lookup[code].get(col, '기타')
+            if code in meta_lookup: return meta_lookup[code].get(col, '기타')
             return '기타'
 
         sim_result_df['업종'] = sim_result_df.apply(lambda x: get_meta(x, '업종'), axis=1)
@@ -277,10 +275,11 @@ if uploaded_file is not None:
                 with t1:
                     sc1, sc2 = st.columns(2)
                     sc3, sc4 = st.columns(2)
-                    with sc1: st.plotly_chart(create_pie(sim_result_df, '종목명', "1. 종목"), use_container_width=True, key='s1')
-                    with sc2: st.plotly_chart(create_pie(sim_result_df, '업종', "2. 업종"), use_container_width=True, key='s2')
-                    with sc3: st.plotly_chart(create_pie(sim_result_df, '국가', "3. 국가"), use_container_width=True, key='s3')
-                    with sc4: st.plotly_chart(create_pie(sim_result_df, '유형', "4. 유형"), use_container_width=True, key='s4')
+                    # [수정됨] value_col='예상 평가금액'을 명시하여 에러 해결
+                    with sc1: st.plotly_chart(create_pie(sim_result_df, '종목명', "1. 종목", value_col='예상 평가금액'), use_container_width=True, key='chart_sim_1')
+                    with sc2: st.plotly_chart(create_pie(sim_result_df, '업종', "2. 업종", value_col='예상 평가금액'), use_container_width=True, key='chart_sim_2')
+                    with sc3: st.plotly_chart(create_pie(sim_result_df, '국가', "3. 국가", value_col='예상 평가금액'), use_container_width=True, key='chart_sim_3')
+                    with sc4: st.plotly_chart(create_pie(sim_result_df, '유형', "4. 유형", value_col='예상 평가금액'), use_container_width=True, key='chart_sim_4')
                 with t2:
                     st.dataframe(
                         sim_result_df[['종목명', '시뮬레이션 수량', '예상 평가금액']].style.format({
