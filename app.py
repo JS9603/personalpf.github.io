@@ -6,7 +6,6 @@ import io
 from datetime import datetime
 import FinanceDataReader as fdr
 import time
-# [NEW] 자동 업데이트를 위한 라이브러리
 from streamlit_autorefresh import st_autorefresh
 
 # -----------------------------------------------------------------------------
@@ -14,22 +13,19 @@ from streamlit_autorefresh import st_autorefresh
 # -----------------------------------------------------------------------------
 st.set_page_config(page_title="Portfolio Manager", layout="wide", page_icon="🏦")
 
-# [NEW] 5분(300,000ms)마다 페이지 자동 새로고침 설정
-# 이 컴포넌트가 실행되면 count가 증가하며 페이지가 리런(Rerun)됩니다.
+# 5분(300초)마다 페이지 자동 새로고침
 refresh_count = st_autorefresh(interval=5 * 60 * 1000, key="data_refresh")
 
 if 'portfolio_data' not in st.session_state:
     st.session_state['portfolio_data'] = None
 
-# [NEW] 자동 갱신 감지 로직
+# 자동 갱신 감지 로직
 if 'last_refresh_count' not in st.session_state:
     st.session_state['last_refresh_count'] = 0
 
-# 리프레시 카운트가 변경되었다면(5분이 지났다면) 데이터 초기화 -> 재계산 유도
 if refresh_count != st.session_state['last_refresh_count']:
     st.session_state['last_refresh_count'] = refresh_count
-    st.session_state['portfolio_data'] = None # 데이터를 비워서 다시 로딩하게 함
-    # (토스트 메시지로 갱신 알림)
+    st.session_state['portfolio_data'] = None
     st.toast('🔄 데이터가 최신 시세로 업데이트되었습니다.', icon='casting')
 
 if 'search_info' not in st.session_state:
@@ -44,13 +40,12 @@ if 'sim_df' not in st.session_state:
 # 상단 헤더
 col_title, col_time = st.columns([0.7, 0.3])
 with col_title:
-    st.title("🏦 포트폴리오 매니저 v5.0")
-    st.markdown("Auto-Update")
+    st.title("🏦 포트폴리오 매니저 v5.1")
+    st.markdown("Hotfix")
 with col_time:
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     st.write("") 
     st.caption(f"🕒 최종 갱신: {now_str}")
-    # 수동 갱신 버튼 (누르면 portfolio_data 초기화)
     if st.button("🔄 즉시 갱신"):
         st.session_state['portfolio_data'] = None
         st.rerun()
@@ -85,13 +80,15 @@ def get_krx_code_map():
     except:
         return {}
 
+# [수정] IAU 및 금 관련 매핑 추가
 US_STOCK_MAP = {
     '애플': 'AAPL', '마이크로소프트': 'MSFT', '테슬라': 'TSLA', '엔비디아': 'NVDA',
     '구글': 'GOOGL', '아마존': 'AMZN', '메타': 'META', '넷플릭스': 'NFLX',
     'AMD': 'AMD', '인텔': 'INTC', '퀄컴': 'QCOM', '브로드컴': 'AVGO',
     'SPY': 'SPY', 'QQQ': 'QQQ', 'SPLG': 'SPLG', 'SCHD': 'SCHD', 
     'JEPI': 'JEPI', 'TLT': 'TLT', 'SOXL': 'SOXL', 'TQQQ': 'TQQQ',
-    '리얼티인컴': 'O', '아이온큐': 'IONQ', '팔란티어': 'PLTR'
+    '리얼티인컴': 'O', '아이온큐': 'IONQ', '팔란티어': 'PLTR',
+    'IAU': 'IAU', '금': 'IAU', '골드': 'IAU', 'GLD': 'GLD' 
 }
 
 def resolve_ticker(input_str):
@@ -126,28 +123,31 @@ def get_stock_info_safe(input_str):
     try:
         price = get_current_price(ticker)
         if price == 0: return None
+        
+        # [수정] 국가/통화 사전 판별 로직 추가 (yfinance 실패 대비)
+        is_korean = (ticker.isdigit() and len(ticker) == 6) or ticker.endswith('.KS') or ticker.endswith('.KQ')
+        country = '한국' if is_korean else '미국'
+        currency = 'KRW' if is_korean else 'USD'
+
         try:
             info = yf.Ticker(ticker).info
             name = info.get('shortName', ticker)
             sector = info.get('sector', '기타')
             
-            # 한국 주식 이름 보정 로직 (선택사항)
-            # krx_map = get_krx_code_map()
-            # ...
-
             return {
                 '종목코드': ticker, 
                 '종목명': name,
                 '업종': sector, 
                 '현재가': price,
-                '국가': '한국' if ticker.endswith('.KS') or ticker.isdigit() else '미국',
+                '국가': country,
                 '유형': 'ETF' if info.get('quoteType') == 'ETF' else '개별주식',
-                'currency': 'KRW' if ticker.endswith('.KS') or ticker.isdigit() else 'USD'
+                'currency': currency
             }
         except:
+            # [수정] yfinance 정보 실패 시, 사전에 판별한 올바른 국가/통화 사용
             return {
                 '종목코드': ticker, '종목명': ticker, '업종': '기타', '현재가': price,
-                '국가': '기타', '유형': '기타', 'currency': 'KRW'
+                '국가': country, '유형': '기타', 'currency': currency
             }
     except:
         return None
@@ -156,7 +156,8 @@ def classify_asset_type(row):
     name = str(row.get('종목명', '')).upper()
     ticker = str(row.get('종목코드', '')).upper()
     if ticker in ['KRW', 'USD'] or '예수금' in name: return '현금'
-    etf_keywords = ['ETF', 'ETN', 'KODEX', 'TIGER', 'ACE', 'SOL', 'SPLG', 'IAU', 'QQQ', 'SPY', 'TLT', 'JEPI', 'SCHD', 'SOXL', 'TQQQ']
+    # [참고] IAU는 이미 etf_keywords에 포함되어 있음
+    etf_keywords = ['ETF', 'ETN', 'KODEX', 'TIGER', 'ACE', 'SOL', 'SPLG', 'IAU', 'QQQ', 'SPY', 'TLT', 'JEPI', 'SCHD', 'SOXL', 'TQQQ', 'GLD']
     if any(k in name for k in etf_keywords) or any(k in ticker for k in etf_keywords): return 'ETF'
     return '개별주식'
 
@@ -209,7 +210,10 @@ def calculate_portfolio(df, usd_krw):
             currency = 'USD'
         else:
             price = get_current_price(ticker)
-            if country == '미국' or ticker == 'USD' or (not ticker.endswith('.KS') and not ticker.isdigit()):
+            # [수정] 미국 주식 판별 로직 강화 (IAU 등 오류 방지)
+            is_us_stock = country == '미국' or ticker == 'USD' or (not ticker.endswith('.KS') and not ticker.isdigit() and not ticker.endswith('.KQ'))
+            
+            if is_us_stock:
                 eval_val = price * qty * usd_krw
                 buy_val = avg_price * qty * usd_krw
                 currency = 'USD'
@@ -243,12 +247,12 @@ def get_template_excel():
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df1 = pd.DataFrame({'종목코드': ['005930', 'KRW'], '종목명': ['삼성전자', '원화예수금'], '업종': ['반도체', '현금'], '국가': ['한국', '한국'], '수량': [10, 1000000], '매수단가': [70000, 1]})
         df1.to_excel(writer, index=False, sheet_name='국내계좌')
-        df2 = pd.DataFrame({'종목코드': ['AAPL', 'USD'], '종목명': ['애플', '달러예수금'], '업종': ['IT', '현금'], '국가': ['미국', '미국'], '수량': [5, 1000], '매수단가': [150, 1]})
+        df2 = pd.DataFrame({'종목코드': ['AAPL', 'IAU', 'USD'], '종목명': ['애플', 'iShares Gold', '달러예수금'], '업종': ['IT', '원자재', '현금'], '국가': ['미국', '미국', '미국'], '수량': [5, 10, 1000], '매수단가': [150, 40, 1]})
         df2.to_excel(writer, index=False, sheet_name='미국계좌')
     return output.getvalue()
 
 with st.expander("⬇️ 엑셀 양식 다운로드"):
-    st.download_button(label="엑셀 양식 받기 (.xlsx)", data=get_template_excel(), file_name='portfolio_template.xlsx')
+    st.download_button(label="엑셀 양식 받기 (.xlsx)", data=get_template_excel(), file_name='portfolio_template_v5.xlsx')
 
 # -----------------------------------------------------------------------------
 # 4. 메인 로직
@@ -256,7 +260,6 @@ with st.expander("⬇️ 엑셀 양식 다운로드"):
 uploaded_file = st.file_uploader("📂 엑셀 파일을 업로드하세요", type=['xlsx'])
 
 if uploaded_file is not None:
-    # 데이터 로드 (세션에 없거나, 강제 리프레시 요청이 있을 때 실행)
     if st.session_state['portfolio_data'] is None:
         try:
             usd_krw = get_exchange_rate()
@@ -361,7 +364,7 @@ if uploaded_file is not None:
 
         with st.expander("➕ 종목 추가하기 (이름으로 검색 가능)"):
             ac1, ac2 = st.columns([3, 1])
-            input_val = ac1.text_input("종목명 또는 코드 입력 (예: 삼성전자, TSLA)")
+            input_val = ac1.text_input("종목명 또는 코드 입력 (예: 삼성전자, TSLA, 금)")
             if ac2.button("검색"):
                 info = get_stock_info_safe(input_val)
                 if info: st.session_state['search_info'] = info
