@@ -21,15 +21,13 @@ if 'sim_target_sheet' not in st.session_state:
 if 'sim_df' not in st.session_state:
     st.session_state['sim_df'] = None
 
-st.title("🏦 포트폴리오 매니저 v4.3")
-st.markdown("멀티 어카운트 기능추가, 포트폴리오 시뮬레이션 기능추가")
+st.title("🏦 포트폴리오 매니저 v4.6")
+st.markdown("시뮬레이션 기능개선")
 
 # -----------------------------------------------------------------------------
 # 2. 유틸리티 함수 & 한글 종목명 매핑
 # -----------------------------------------------------------------------------
-# 주요 종목 한글 매핑 사전 (필요시 직접 추가 가능)
 KOREAN_NAME_MAP = {
-    # 미국 주식
     'AAPL': '애플', 'MSFT': '마이크로소프트', 'TSLA': '테슬라', 'NVDA': '엔비디아',
     'GOOGL': '알파벳(구글)', 'AMZN': '아마존', 'META': '메타', 'NFLX': '넷플릭스',
     'AMD': 'AMD', 'INTC': '인텔', 'QCOM': '퀄컴', 'AVGO': '브로드컴',
@@ -37,8 +35,6 @@ KOREAN_NAME_MAP = {
     'SCHD': 'SCHD (배당성장)', 'JEPI': 'JEPI (커버드콜)', 'TLT': 'TLT (미국채20년)',
     'SOXL': 'SOXL (반도체3배)', 'TQQQ': 'TQQQ (나스닥3배)', 'O': '리얼티인컴',
     'IAU': 'IAU (금)', 'GLD': 'GLD (금)',
-    
-    # 한국 주식 (yfinance가 영문으로 줄 경우 대비)
     '005930.KS': '삼성전자', '000660.KS': 'SK하이닉스', '035420.KS': 'NAVER',
     '035720.KS': '카카오', '005380.KS': '현대차', '000270.KS': '기아',
     '005490.KS': 'POSCO홀딩스', '051910.KS': 'LG화학', '006400.KS': '삼성SDI',
@@ -51,6 +47,16 @@ def get_exchange_rate():
         return yf.Ticker("KRW=X").history(period="1d")['Close'].iloc[-1]
     except:
         return 1450.0
+
+@st.cache_data(ttl=300)
+def get_all_exchange_rates():
+    rates = {'USD': 1450.0, 'JPY': 9.5, 'CNY': 200.0}
+    try:
+        rates['USD'] = yf.Ticker("KRW=X").history(period="1d")['Close'].iloc[-1]
+        rates['JPY'] = yf.Ticker("JPYKRW=X").history(period="1d")['Close'].iloc[-1]
+        rates['CNY'] = yf.Ticker("CNYKRW=X").history(period="1d")['Close'].iloc[-1]
+    except: pass
+    return rates
 
 def get_current_price(ticker):
     try:
@@ -69,20 +75,13 @@ def get_stock_info(ticker):
         except: info = {}
         
         is_korea = ticker.endswith('.KS') or ticker.endswith('.KQ')
-        
-        # [수정] 한글 이름 우선 적용 로직
         raw_name = info.get('shortName', ticker)
-        # 1. 매핑 테이블에 있으면 그거 씀
-        if ticker in KOREAN_NAME_MAP:
-            korean_name = KOREAN_NAME_MAP[ticker]
-        # 2. 한국 주식인데 이름이 없거나 영문이면 매핑 확인 (없으면 그냥 씀)
-        else:
-            korean_name = raw_name
+        korean_name = KOREAN_NAME_MAP.get(ticker, raw_name)
 
         return {
             '종목코드': ticker,
             '종목명': korean_name, 
-            # '업종': info.get('sector', '기타'), # [삭제] 업종 제외
+            '업종': info.get('sector', '기타'), # [복구] 업종 정보 가져오기
             '국가': '한국' if is_korea else '미국',
             '유형': 'ETF' if info.get('quoteType') == 'ETF' else '개별주식',
             '현재가': current_price,
@@ -117,7 +116,6 @@ def calculate_portfolio(df, usd_krw):
         ticker = str(row['종목코드']).upper().strip()
         currency = 'KRW'
         
-        # [수정] 엑셀 로드 시에도 한글 매핑 적용
         if ticker in KOREAN_NAME_MAP:
             df.at[index, '종목명'] = KOREAN_NAME_MAP[ticker]
 
@@ -145,6 +143,11 @@ def calculate_portfolio(df, usd_krw):
     df['수익률'] = df.apply(lambda x: ((x['평가금액'] - x['매수금액']) / x['매수금액'] * 100) if x['매수금액'] > 0 else 0, axis=1)
     df['유형'] = df.apply(classify_asset_type_initial, axis=1)
     df['통화'] = currencies
+    
+    # [수정] 업종 컬럼이 없으면 '기타'로 초기화 (수동 입력을 위해)
+    if '업종' not in df.columns:
+        df['업종'] = '기타'
+        
     if '시뮬레이션 수량' not in df.columns:
         df['시뮬레이션 수량'] = df['수량']
     return df
@@ -155,10 +158,10 @@ def calculate_portfolio(df, usd_krw):
 def get_template_excel():
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        # [수정] 엑셀 예시도 '업종' 컬럼 제거
-        df1 = pd.DataFrame({'종목코드': ['000660.KS', 'KRW'], '종목명': ['SK하이닉스', '원화예수금'], '국가': ['한국', '한국'], '수량': [10, 1000000], '매수단가': [180000, 1]})
+        # [수정] 엑셀 양식에 '업종' 컬럼 다시 추가 (사용자 편의)
+        df1 = pd.DataFrame({'종목코드': ['000660.KS', 'KRW'], '종목명': ['SK하이닉스', '원화예수금'], '업종': ['반도체', '현금'], '국가': ['한국', '한국'], '수량': [10, 1000000], '매수단가': [180000, 1]})
         df1.to_excel(writer, index=False, sheet_name='국내계좌')
-        df2 = pd.DataFrame({'종목코드': ['SPLG', 'USD'], '종목명': ['S&P 500', '달러예수금'], '국가': ['미국', '미국'], '수량': [15, 500], '매수단가': [68.20, 1]})
+        df2 = pd.DataFrame({'종목코드': ['SPLG', 'USD'], '종목명': ['S&P 500', '달러예수금'], '업종': ['지수추종', '현금'], '국가': ['미국', '미국'], '수량': [15, 500], '매수단가': [68.20, 1]})
         df2.to_excel(writer, index=False, sheet_name='미국계좌')
     return output.getvalue()
 
@@ -179,7 +182,6 @@ if uploaded_file is not None:
             processed_data = {}
             with st.spinner('계좌 분석 중...'):
                 for sheet_name, df_sheet in xls.items():
-                    # [수정] 업종 필수 컬럼 제외
                     required = ['종목코드', '종목명', '수량', '매수단가']
                     if not all(col in df_sheet.columns for col in required): continue
                     processed_df = calculate_portfolio(df_sheet.copy(), usd_krw)
@@ -206,7 +208,17 @@ if uploaded_file is not None:
     # --- [TAB 1] 통합 요약 ---
     with tab1:
         st.subheader("🌐 전체 자산 통합 리포트")
-        
+
+        with st.expander("💱 주요국 환율 정보 (실시간)", expanded=True):
+            rates = get_all_exchange_rates()
+            exchange_df = pd.DataFrame([
+                {'국가': '🇺🇸 미국', '화폐': 'USD', '기준': '1 달러', '환율 (KRW)': rates['USD']},
+                {'국가': '🇯🇵 일본', '화폐': 'JPY', '기준': '100 엔', '환율 (KRW)': rates['JPY'] * 100},
+                {'국가': '🇨🇳 중국', '화폐': 'CNY', '기준': '1 위안', '환율 (KRW)': rates['CNY']},
+                {'국가': '🇰🇷 한국', '화폐': 'KRW', '기준': '-', '환율 (KRW)': 1.0}
+            ])
+            st.dataframe(exchange_df, column_config={"환율 (KRW)": st.column_config.NumberColumn(format="%.2f 원")}, hide_index=True, use_container_width=True)
+
         total_eval = all_df['평가금액'].sum()
         total_buy = all_df['매수금액'].sum()
         profit = total_eval - total_buy
@@ -219,9 +231,6 @@ if uploaded_file is not None:
         
         st.divider()
         
-        # [수정] 업종 차트 제거 -> 3개만 표시 (계좌, 종목, 국가, 유형) -> 4분할 유지하되 업종 대신 다른걸 넣거나, 2x2 유지
-        # 사용자가 업종을 빼라고 했으니 차트에서도 업종을 빼고 다른걸 넣겠습니다. 
-        # (자산유형, 국가, 계좌명, 종목명) 이렇게 4개면 딱 좋습니다.
         r1c1, r1c2 = st.columns(2)
         r2c1, r2c2 = st.columns(2)
         with r1c1: st.plotly_chart(create_pie(all_df, '계좌명', "1. 계좌별 비중"), use_container_width=True, key='all_c1')
@@ -231,7 +240,6 @@ if uploaded_file is not None:
 
         st.divider()
         st.subheader("📋 통합 자산 상세")
-        # [수정] '업종' 컬럼 제거
         summary_cols = ['계좌명', '종목명', '유형', '수량', '매수단가', '현재가', '수익률', '평가금액']
         summary_display = all_df[summary_cols].copy()
         
@@ -262,12 +270,10 @@ if uploaded_file is not None:
         
         st.divider()
         sc1, sc2 = st.columns(2)
-        # [수정] 업종 차트 대신 유형 차트로 대체
         with sc1: st.plotly_chart(create_pie(target_df, '종목명', "종목 비중"), use_container_width=True, key=f'v1_{selected_sheet}')
         with sc2: st.plotly_chart(create_pie(target_df, '유형', "유형 비중"), use_container_width=True, key=f'v2_{selected_sheet}')
         
         st.caption(f"📋 {selected_sheet} 보유 종목")
-        # [수정] '업종' 컬럼 제거
         view_display = target_df[['종목명', '유형', '수량', '매수단가', '현재가', '수익률', '평가금액']].copy()
         st.dataframe(
             view_display.style.format({
@@ -279,7 +285,8 @@ if uploaded_file is not None:
     # --- [TAB 3] 시뮬레이션 ---
     with tab3:
         st.header("🎛️ 계좌별 리밸런싱 시뮬레이터")
-        
+        st.caption("표에서 '업종', '수량' 등을 자유롭게 수정하면 차트에 즉시 반영됩니다.")
+
         sim_sheets = list(portfolio_dict.keys())
         selected_sim_sheet = st.selectbox("시뮬레이션할 계좌:", sim_sheets, key='sim_sheet')
         
@@ -302,10 +309,10 @@ if uploaded_file is not None:
             
             if st.session_state['search_info']:
                 info = st.session_state['search_info']
-                # [수정] 검색 결과 표에서 '업종' 제외
                 preview_df = pd.DataFrame([{
                     '코드': info['종목코드'],
                     '종목명': info['종목명'],
+                    '업종': info['업종'],
                     '현재가': info['현재가']
                 }])
                 st.markdown("##### 🔎 검색 결과")
@@ -314,7 +321,7 @@ if uploaded_file is not None:
                 if st.button("적용", type="primary"):
                     new_row = {
                         '종목코드': info['종목코드'], '종목명': info['종목명'], 
-                        # '업종': info['업종'], # [삭제]
+                        '업종': info['업종'], # [복구] 시뮬레이션에선 업종 사용
                         '국가': info['국가'], '유형': info['유형'], '수량': 0, '매수단가': 0,
                         '현재가': info['현재가'], '매수금액': 0, '평가금액': 0, '수익률': 0,
                         '통화': info['currency'], '시뮬레이션 수량': 0, '계좌명': selected_sim_sheet
@@ -325,12 +332,14 @@ if uploaded_file is not None:
 
         st.divider()
 
-        sim_view_cols = ['종목코드', '종목명', '유형', '통화', '현재가', '시뮬레이션 수량']
+        # [수정] 업종 컬럼 추가 및 수정 가능하도록 설정
+        sim_view_cols = ['종목코드', '종목명', '업종', '유형', '통화', '현재가', '시뮬레이션 수량']
         edited_df = st.data_editor(
             sim_df[sim_view_cols],
             column_config={
                 "종목코드": st.column_config.TextColumn("코드", disabled=True),
                 "종목명": st.column_config.TextColumn("종목명 (수정가능)"),
+                "업종": st.column_config.TextColumn("업종 (수정가능)"), # [NEW]
                 "현재가": st.column_config.NumberColumn("단가", format="%d"),
                 "시뮬레이션 수량": st.column_config.NumberColumn("목표수량", format="%.2f", min_value=0, step=1)
             },
@@ -350,7 +359,7 @@ if uploaded_file is not None:
 
         sim_result_df['예상 평가금액'] = sim_result_df.apply(calc_sim_eval, axis=1)
         
-        # 메타데이터 복원 (업종 제외)
+        # 메타데이터 복원 (업종은 위에서 사용자가 편집한 값 그대로 사용)
         meta_lookup = sim_df.set_index('종목코드')[['국가']].to_dict('index')
         sim_result_df['국가'] = sim_result_df.apply(lambda x: meta_lookup.get(x.get('종목코드'), {}).get('국가', '기타'), axis=1)
         if '유형' not in sim_result_df.columns:
@@ -373,13 +382,13 @@ if uploaded_file is not None:
             if not sim_result_df.empty:
                 t1, t2 = st.tabs(["차트", "데이터"])
                 with t1:
-                    # [수정] 업종 차트 제거
+                    # [수정] 차트 구성: 종목 / 업종(NEW) / 유형
                     c1, c2, c3 = st.columns(3)
-                    with c1: st.plotly_chart(create_pie(sim_result_df, '종목명', "종목", '예상 평가금액'), use_container_width=True, key='s1')
-                    with c2: st.plotly_chart(create_pie(sim_result_df, '국가', "국가", '예상 평가금액'), use_container_width=True, key='s2')
-                    with c3: st.plotly_chart(create_pie(sim_result_df, '유형', "유형", '예상 평가금액'), use_container_width=True, key='s3')
+                    with c1: st.plotly_chart(create_pie(sim_result_df, '종목명', "1. 종목", '예상 평가금액'), use_container_width=True, key='s1')
+                    with c2: st.plotly_chart(create_pie(sim_result_df, '업종', "2. 업종", '예상 평가금액'), use_container_width=True, key='s2')
+                    with c3: st.plotly_chart(create_pie(sim_result_df, '유형', "3. 유형", '예상 평가금액'), use_container_width=True, key='s3')
                 with t2:
-                    st.dataframe(sim_result_df[['종목명', '시뮬레이션 수량', '예상 평가금액']].style.format({'시뮬레이션 수량': '{:,.2f}', '예상 평가금액': '{:,.0f}'}), use_container_width=True, hide_index=True)
+                    st.dataframe(sim_result_df[['종목명', '업종', '시뮬레이션 수량', '예상 평가금액']].style.format({'시뮬레이션 수량': '{:,.2f}', '예상 평가금액': '{:,.0f}'}), use_container_width=True, hide_index=True)
 
     # --- [TAB 4] 원본 데이터 ---
     with tab4:
