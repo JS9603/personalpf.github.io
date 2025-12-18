@@ -5,4 +5,4 @@ plotly
 openpyxl
 finance-datareader
 lxml
-pip install streamlit-autorefresh
+streamlit-autorefresh
