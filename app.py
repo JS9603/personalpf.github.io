@@ -6,14 +6,31 @@ import io
 from datetime import datetime
 import FinanceDataReader as fdr
 import time
+# [NEW] 자동 업데이트를 위한 라이브러리
+from streamlit_autorefresh import st_autorefresh
 
 # -----------------------------------------------------------------------------
 # 1. 페이지 설정 및 세션 초기화
 # -----------------------------------------------------------------------------
 st.set_page_config(page_title="Portfolio Manager", layout="wide", page_icon="🏦")
 
+# [NEW] 5분(300,000ms)마다 페이지 자동 새로고침 설정
+# 이 컴포넌트가 실행되면 count가 증가하며 페이지가 리런(Rerun)됩니다.
+refresh_count = st_autorefresh(interval=5 * 60 * 1000, key="data_refresh")
+
 if 'portfolio_data' not in st.session_state:
     st.session_state['portfolio_data'] = None
+
+# [NEW] 자동 갱신 감지 로직
+if 'last_refresh_count' not in st.session_state:
+    st.session_state['last_refresh_count'] = 0
+
+# 리프레시 카운트가 변경되었다면(5분이 지났다면) 데이터 초기화 -> 재계산 유도
+if refresh_count != st.session_state['last_refresh_count']:
+    st.session_state['last_refresh_count'] = refresh_count
+    st.session_state['portfolio_data'] = None # 데이터를 비워서 다시 로딩하게 함
+    # (토스트 메시지로 갱신 알림)
+    st.toast('🔄 데이터가 최신 시세로 업데이트되었습니다.', icon='casting')
 
 if 'search_info' not in st.session_state:
     st.session_state['search_info'] = None
@@ -27,15 +44,19 @@ if 'sim_df' not in st.session_state:
 # 상단 헤더
 col_title, col_time = st.columns([0.7, 0.3])
 with col_title:
-    st.title("🏦 포트폴리오 매니저 v4.9.5")
-    st.markdown("Rebalance Plan")
+    st.title("🏦 포트폴리오 매니저 v5.0")
+    st.markdown("Auto-Update")
 with col_time:
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     st.write("") 
-    st.caption(f"🕒 데이터 기준: {now_str}")
+    st.caption(f"🕒 최종 갱신: {now_str}")
+    # 수동 갱신 버튼 (누르면 portfolio_data 초기화)
+    if st.button("🔄 즉시 갱신"):
+        st.session_state['portfolio_data'] = None
+        st.rerun()
 
 # -----------------------------------------------------------------------------
-# 2. 데이터 처리 함수
+# 2. 데이터 처리 및 검색 함수
 # -----------------------------------------------------------------------------
 
 @st.cache_data(ttl=60)
@@ -55,6 +76,33 @@ def get_all_exchange_rates():
     except: pass
     return rates
 
+@st.cache_data(ttl=3600*24)
+def get_krx_code_map():
+    try:
+        df = fdr.StockListing('KRX')
+        name_to_code = dict(zip(df['Name'], df['Code']))
+        return name_to_code
+    except:
+        return {}
+
+US_STOCK_MAP = {
+    '애플': 'AAPL', '마이크로소프트': 'MSFT', '테슬라': 'TSLA', '엔비디아': 'NVDA',
+    '구글': 'GOOGL', '아마존': 'AMZN', '메타': 'META', '넷플릭스': 'NFLX',
+    'AMD': 'AMD', '인텔': 'INTC', '퀄컴': 'QCOM', '브로드컴': 'AVGO',
+    'SPY': 'SPY', 'QQQ': 'QQQ', 'SPLG': 'SPLG', 'SCHD': 'SCHD', 
+    'JEPI': 'JEPI', 'TLT': 'TLT', 'SOXL': 'SOXL', 'TQQQ': 'TQQQ',
+    '리얼티인컴': 'O', '아이온큐': 'IONQ', '팔란티어': 'PLTR'
+}
+
+def resolve_ticker(input_str):
+    input_str = input_str.strip()
+    if input_str in US_STOCK_MAP:
+        return US_STOCK_MAP[input_str]
+    krx_map = get_krx_code_map()
+    if input_str in krx_map:
+        return krx_map[input_str]
+    return input_str.upper()
+
 def get_current_price(ticker):
     ticker = str(ticker).strip().upper()
     try:
@@ -73,8 +121,8 @@ def get_current_price(ticker):
     except:
         return 0.0
 
-def get_stock_info_safe(ticker):
-    ticker = str(ticker).strip().upper()
+def get_stock_info_safe(input_str):
+    ticker = resolve_ticker(str(input_str))
     try:
         price = get_current_price(ticker)
         if price == 0: return None
@@ -82,8 +130,16 @@ def get_stock_info_safe(ticker):
             info = yf.Ticker(ticker).info
             name = info.get('shortName', ticker)
             sector = info.get('sector', '기타')
+            
+            # 한국 주식 이름 보정 로직 (선택사항)
+            # krx_map = get_krx_code_map()
+            # ...
+
             return {
-                '종목코드': ticker, '종목명': name, '업종': sector, '현재가': price,
+                '종목코드': ticker, 
+                '종목명': name,
+                '업종': sector, 
+                '현재가': price,
                 '국가': '한국' if ticker.endswith('.KS') or ticker.isdigit() else '미국',
                 '유형': 'ETF' if info.get('quoteType') == 'ETF' else '개별주식',
                 'currency': 'KRW' if ticker.endswith('.KS') or ticker.isdigit() else 'USD'
@@ -106,17 +162,11 @@ def classify_asset_type(row):
 
 def create_pie(data, names, title, value_col='평가금액'):
     if data.empty or value_col not in data.columns: return None
-    
     fig = px.pie(data, values=value_col, names=names, title=title, hole=0.4)
     fig.update_traces(textposition='inside', textinfo='percent')
-    
     fig.update_layout(
         showlegend=True,
-        legend=dict(
-            orientation="v",
-            yanchor="top", y=1,
-            xanchor="left", x=1.05
-        ),
+        legend=dict(orientation="v", yanchor="top", y=1, xanchor="left", x=1.05),
         margin=dict(t=40, b=20, l=10, r=0)
     )
     return fig
@@ -128,16 +178,22 @@ def color_profit(val):
 
 def calculate_portfolio(df, usd_krw):
     current_prices, eval_values, buy_values, currencies = [], [], [], []
-    
+    krx_map = get_krx_code_map()
+    code_to_name = {v: k for k, v in krx_map.items()}
+
     for index, row in df.iterrows():
         raw_ticker = str(row['종목코드']).strip()
         ticker = raw_ticker.upper()
         
+        current_name = str(row.get('종목명', ''))
+        clean_code = ticker.split('.')[0]
+        if (not current_name or current_name == 'nan') and clean_code in code_to_name:
+             df.at[index, '종목명'] = code_to_name[clean_code]
+
         qty = float(row['수량'])
         avg_price = float(row['매수단가'])
         country = str(row.get('국가', '')).strip()
 
-        # 1. 현금
         if ticker == 'KRW':
             price = 1.0
             eval_val = qty
@@ -151,8 +207,6 @@ def calculate_portfolio(df, usd_krw):
             else:
                 buy_val = qty * avg_price
             currency = 'USD'
-        
-        # 2. 주식
         else:
             price = get_current_price(ticker)
             if country == '미국' or ticker == 'USD' or (not ticker.endswith('.KS') and not ticker.isdigit()):
@@ -178,10 +232,7 @@ def calculate_portfolio(df, usd_krw):
     
     if '업종' not in df.columns: df['업종'] = '기타'
     df['업종'] = df['업종'].fillna('기타')
-    
-    if '시뮬레이션 수량' not in df.columns:
-        df['시뮬레이션 수량'] = df['수량']
-        
+    if '시뮬레이션 수량' not in df.columns: df['시뮬레이션 수량'] = df['수량']
     return df
 
 # -----------------------------------------------------------------------------
@@ -205,13 +256,14 @@ with st.expander("⬇️ 엑셀 양식 다운로드"):
 uploaded_file = st.file_uploader("📂 엑셀 파일을 업로드하세요", type=['xlsx'])
 
 if uploaded_file is not None:
+    # 데이터 로드 (세션에 없거나, 강제 리프레시 요청이 있을 때 실행)
     if st.session_state['portfolio_data'] is None:
         try:
             usd_krw = get_exchange_rate()
             xls = pd.read_excel(uploaded_file, sheet_name=None)
             
             processed_data = {}
-            with st.spinner(f'데이터 분석 중... (환율: {usd_krw:,.2f}원)'):
+            with st.spinner(f'데이터 갱신 중... (환율: {usd_krw:,.2f}원)'):
                 for sheet_name, df_sheet in xls.items():
                     required = ['종목코드', '종목명', '수량', '매수단가']
                     if not all(col in df_sheet.columns for col in required): continue
@@ -240,7 +292,6 @@ if uploaded_file is not None:
     # --- [TAB 1] 통합 대시보드 ---
     with tab1:
         st.subheader("🌐 전체 자산 현황")
-
         total_eval = all_df['평가금액'].sum()
         total_buy = all_df['매수금액'].sum()
         profit = total_eval - total_buy
@@ -250,13 +301,11 @@ if uploaded_file is not None:
         m1.metric("총 매수금액", f"{total_buy:,.0f} 원")
         m2.metric("총 평가금액", f"{total_eval:,.0f} 원", f"{profit:+,.0f} 원")
         m3.metric("총 수익률", f"{yield_rate:.2f} %", f"{yield_rate:.2f} %")
-        
         st.divider()
         
         r1_c1, r1_c2 = st.columns(2)
         with r1_c1: st.plotly_chart(create_pie(all_df, '종목명', "1. 종목별 비중"), use_container_width=True, key='t1_c1')
         with r1_c2: st.plotly_chart(create_pie(all_df, '업종', "2. 업종(섹터)별 비중"), use_container_width=True, key='t1_c2')
-            
         r2_c1, r2_c2 = st.columns(2)
         with r2_c1: st.plotly_chart(create_pie(all_df, '국가', "3. 국가별 비중"), use_container_width=True, key='t1_c3')
         with r2_c2: st.plotly_chart(create_pie(all_df, '유형', "4. 자산 유형별 비중"), use_container_width=True, key='t1_c4')
@@ -282,7 +331,6 @@ if uploaded_file is not None:
         
         m1, m2 = st.columns(2)
         m1.metric("계좌 평가금액", f"{t_eval:,.0f} 원", f"{t_profit:+,.0f} 원")
-        
         st.divider()
         
         c1, c2 = st.columns(2)
@@ -311,17 +359,18 @@ if uploaded_file is not None:
         sim_df = st.session_state['sim_df']
         cur_total = portfolio_dict[sel_sim_sheet]['평가금액'].sum()
 
-        with st.expander("➕ 종목 추가하기"):
+        with st.expander("➕ 종목 추가하기 (이름으로 검색 가능)"):
             ac1, ac2 = st.columns([3, 1])
-            add_ticker = ac1.text_input("티커 입력 (예: TSLA, 005930)")
+            input_val = ac1.text_input("종목명 또는 코드 입력 (예: 삼성전자, TSLA)")
             if ac2.button("검색"):
-                info = get_stock_info_safe(add_ticker)
+                info = get_stock_info_safe(input_val)
                 if info: st.session_state['search_info'] = info
                 else: st.error("종목을 찾을 수 없습니다.")
             
             if st.session_state['search_info']:
                 inf = st.session_state['search_info']
-                st.write(f"검색결과: **{inf['종목명']}** ({inf['현재가']:,.0f}원)")
+                st.success(f"검색 성공: **{inf['종목명']}** ({inf['종목코드']})")
+                st.write(f"현재가: {inf['현재가']:,.0f}원")
                 if st.button("리스트에 추가"):
                     new_row = {
                         '종목코드': inf['종목코드'], '종목명': inf['종목명'], '업종': inf['업종'],
@@ -334,8 +383,11 @@ if uploaded_file is not None:
                     st.rerun()
 
         edited = st.data_editor(
-            sim_df[['종목명', '업종', '현재가', '시뮬레이션 수량']],
+            sim_df[['종목명', '종목코드', '현재가', '시뮬레이션 수량']],
             column_config={
+                "종목명": st.column_config.TextColumn("종목명", disabled=True),
+                "종목코드": st.column_config.TextColumn("코드", disabled=True),
+                "현재가": st.column_config.NumberColumn("현재가", format="%d 원", disabled=True),
                 "시뮬레이션 수량": st.column_config.NumberColumn("목표 수량", min_value=0, step=1, format="%.2f")
             },
             use_container_width=True, num_rows="dynamic", key="sim_editor"
@@ -343,8 +395,6 @@ if uploaded_file is not None:
         
         sim_df.update(edited)
         
-        # --- 계산 로직 ---
-        # 1. 예상 평가금액 (총액)
         def calc_sim_total(row):
             p, q = row['현재가'], row['시뮬레이션 수량']
             if row['통화'] == 'USD' or row['국가'] == '미국':
@@ -352,19 +402,15 @@ if uploaded_file is not None:
             return p * q
         
         sim_df['예상 평가금액'] = sim_df.apply(calc_sim_total, axis=1)
-        
-        # 2. 매수/매도 필요 금액 (차액)
         sim_df['수량변동'] = sim_df['시뮬레이션 수량'] - sim_df['수량']
         def calc_diff_amt(row):
             p = row['현재가']
             q_diff = row['수량변동']
-            # USD인 경우 환율 적용
             if row['통화'] == 'USD' or row['국가'] == '미국':
                 return p * q_diff * usd_krw
             return p * q_diff
 
         sim_df['매매금액'] = sim_df.apply(calc_diff_amt, axis=1)
-        
         sim_total = sim_df['예상 평가금액'].sum()
         diff = cur_total - sim_total
         
@@ -373,36 +419,29 @@ if uploaded_file is not None:
         with c_res1:
             st.metric("현재 자산", f"{cur_total:,.0f} 원")
             st.metric("시뮬레이션 후", f"{sim_total:,.0f} 원")
-            if diff >= 0: st.success(f"잔액 (확보): {diff:,.0f} 원")
-            else: st.error(f"부족 (필요): {abs(diff):,.0f} 원")
+            if diff >= 0: st.success(f"잔액: {diff:,.0f} 원")
+            else: st.error(f"부족: {abs(diff):,.0f} 원")
         
-        # --- [NEW] 리밸런싱 매매 계획표 ---
         st.markdown("##### 📝 리밸런싱 매매 계획표")
-        
-        # 변동이 있는 종목만 필터링
         plan_df = sim_df[sim_df['수량변동'] != 0].copy()
         
         if not plan_df.empty:
-            # 표시용 컬럼 정리
             plan_df['구분'] = plan_df['수량변동'].apply(lambda x: '매수 (BUY)' if x > 0 else '매도 (SELL)')
-            plan_display = plan_df[['종목명', '구분', '수량', '시뮬레이션 수량', '수량변동', '매매금액']].copy()
-            plan_display.columns = ['종목명', '구분', '현재수량', '목표수량', '변동수량', '예상 소요금액']
+            plan_display = plan_df[['종목명', '종목코드', '현재가', '구분', '수량', '시뮬레이션 수량', '수량변동', '매매금액']].copy()
+            plan_display.columns = ['종목명', '코드', '현재가', '구분', '현재수량', '목표수량', '변동수량', '예상 소요금액']
             
-            # 스타일링 (매수는 빨강, 매도는 파랑)
             st.dataframe(
                 plan_display.style.format({
-                    '현재수량': '{:,.2f}', '목표수량': '{:,.2f}', '변동수량': '{:+,.2f}', '예상 소요금액': '{:+,.0f} 원'
+                    '현재가': '{:,.0f}', '현재수량': '{:,.2f}', '목표수량': '{:,.2f}', '변동수량': '{:+,.2f}', '예상 소요금액': '{:+,.0f} 원'
                 }).map(lambda x: 'color: #ff2b2b' if x > 0 else 'color: #00498c', subset=['변동수량', '예상 소요금액']),
                 use_container_width=True, hide_index=True
             )
         else:
-            st.info("💡 수량 변동 사항이 없습니다. 위의 표에서 '목표 수량'을 변경해보세요.")
+            st.info("💡 수량 변동 사항이 없습니다.")
 
         st.divider()
-        st.markdown("##### 📈 시뮬레이션 결과 차트")
         c1, c2, c3 = st.columns(3)
         valid_sim = sim_df[sim_df['예상 평가금액'] > 0]
-        
         with c1: st.plotly_chart(create_pie(valid_sim, '종목명', "1. 종목 비중"), use_container_width=True, key='t3_c1')
         with c2: st.plotly_chart(create_pie(valid_sim, '업종', "2. 업종 비중"), use_container_width=True, key='t3_c2')
         with c3: st.plotly_chart(create_pie(valid_sim, '유형', "3. 유형 비중"), use_container_width=True, key='t3_c3')
