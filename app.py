@@ -5,18 +5,18 @@ import plotly.express as px
 import io
 
 # -----------------------------------------------------------------------------
-# 1. 페이지 설정 및 세션 상태 초기화
+# 1. 페이지 설정 및 세션 초기화
 # -----------------------------------------------------------------------------
 st.set_page_config(page_title="My Portfolio Simulator", layout="wide", page_icon="📈")
 
 if 'sim_data' not in st.session_state:
     st.session_state['sim_data'] = None
 
-st.title("📈 포트폴리오 시뮬레이터 v3.0")
-st.markdown("시뮬레이션 개선, 비교분석 기능추가.")
+st.title("📈 포트폴리오 시뮬레이터 v3.2")
+st.markdown("시뮬레이션 기능추가, 검색기능 추가.")
 
 # -----------------------------------------------------------------------------
-# 2. 유틸리티 함수
+# 2. 유틸리티 및 스타일링 함수
 # -----------------------------------------------------------------------------
 @st.cache_data(ttl=60)
 def get_exchange_rate():
@@ -32,69 +32,45 @@ def get_current_price(ticker):
         return 0.0
 
 def get_stock_info(ticker):
-    """티커로 종목 정보 가져오기 (종목 추가용)"""
+    """종목 추가용 정보 가져오기"""
     try:
         t = yf.Ticker(ticker)
-        info = t.info
         history = t.history(period='1d')
-        
-        if history.empty:
-            return None
+        if history.empty: return None
             
-        current_price = history['Close'].iloc[-1]
-        name = info.get('shortName', ticker)
-        sector = info.get('sector', '기타')
-        
-        # 국가 추정
-        if ticker.endswith('.KS') or ticker.endswith('.KQ'):
-            country = '한국'
-            currency = 'KRW'
-        else:
-            country = '미국' # 편의상 미국으로 가정
-            currency = 'USD'
-            
-        # 자산 유형 추정
-        etype = '개별주식'
-        if info.get('quoteType') == 'ETF':
-            etype = 'ETF'
-            
+        info = t.info
         return {
             '종목코드': ticker,
-            '종목명': name,
-            '업종': sector,
-            '국가': country,
-            '유형': etype,
-            '현재가': current_price,
-            'currency': currency
+            '종목명': info.get('shortName', ticker),
+            '업종': info.get('sector', '기타'),
+            '국가': '한국' if ticker.endswith('.KS') or ticker.endswith('.KQ') else '미국',
+            '유형': 'ETF' if info.get('quoteType') == 'ETF' else '개별주식',
+            '현재가': history['Close'].iloc[-1],
+            'currency': 'KRW' if ticker.endswith('.KS') or ticker.endswith('.KQ') else 'USD'
         }
     except:
         return None
 
 def classify_asset_type_initial(row):
-    """엑셀 로드 시 초기 분류"""
     name = str(row['종목명']).upper()
     ticker = str(row['종목코드']).upper()
-    
-    if ticker in ['KRW', 'USD'] or '예수금' in name:
-        return '현금'
-    
-    etf_keywords = ['ETF', 'ETN', 'KODEX', 'TIGER', 'ACE', 'SOL', 'KBSTAR', 'HANARO', 
-                    'ISHARES', 'SPDR', 'VANGUARD', 'QQQ', 'SPY', 'SPLG', 'IAU', 'GLD', 'TLT', 'SHV', 'JEPI', 'SCHD']
-    
-    if any(k in name for k in etf_keywords) or any(k in ticker for k in etf_keywords):
-        return 'ETF'
+    if ticker in ['KRW', 'USD'] or '예수금' in name: return '현금'
+    etf_keywords = ['ETF', 'ETN', 'KODEX', 'TIGER', 'ACE', 'SOL', 'SPLG', 'IAU', 'QQQ', 'SPY', 'TLT', 'JEPI', 'SCHD']
+    if any(k in name for k in etf_keywords) or any(k in ticker for k in etf_keywords): return 'ETF'
     return '개별주식'
 
 def create_pie(data, names, title):
-    # 색상 팔레트 개선 (Plotly Qualitative Colors)
-    fig = px.pie(data, values='평가금액', names=names, title=title, hole=0.4, 
-                 color_discrete_sequence=px.colors.qualitative.Pastel)
-    fig.update_traces(textposition='inside', textinfo='percent+label')
-    fig.update_layout(margin=dict(t=40, b=0, l=0, r=0), showlegend=False)
+    fig = px.pie(data, values='평가금액', names=names, title=title, hole=0.4)
+    fig.update_layout(margin=dict(t=30, b=0, l=0, r=0))
     return fig
 
+def color_profit(val):
+    if val > 0: return 'color: #ff2b2b'
+    elif val < 0: return 'color: #00498c'
+    return 'color: black'
+
 # -----------------------------------------------------------------------------
-# 3. 엑셀 양식 다운로드
+# 3. 엑셀 다운로드
 # -----------------------------------------------------------------------------
 def get_template_excel():
     data = {
@@ -112,7 +88,7 @@ def get_template_excel():
     return output.getvalue()
 
 with st.expander("⬇️ 엑셀 양식 다운로드"):
-    st.download_button(label="엑셀 양식 받기 (.xlsx)", data=get_template_excel(), file_name='portfolio_template.xlsx')
+    st.download_button(label="엑셀 양식 받기 (.xlsx)", data=get_template_excel(), file_name='portfolio.xlsx')
 
 # -----------------------------------------------------------------------------
 # 4. 메인 로직
@@ -120,41 +96,30 @@ with st.expander("⬇️ 엑셀 양식 다운로드"):
 uploaded_file = st.file_uploader("📂 엑셀 파일을 업로드하세요 (초기화하려면 새로고침)", type=['xlsx'])
 
 if uploaded_file is not None:
-    # 1) 최초 로드 시에만 데이터 처리 및 세션 저장
+    # 최초 로드 및 세션 저장
     if st.session_state['sim_data'] is None:
         try:
             df = pd.read_excel(uploaded_file)
             usd_krw = get_exchange_rate()
             
-            # 초기 데이터 계산
-            current_prices = []
-            eval_values = []
-            buy_values = []
-            currencies = []
-
-            with st.spinner('초기 데이터 분석 중...'):
+            # 초기 계산
+            current_prices, eval_values, buy_values, currencies = [], [], [], []
+            with st.spinner('데이터 분석 중...'):
                 for index, row in df.iterrows():
                     ticker = str(row['종목코드']).upper().strip()
                     currency = 'KRW'
-                    
                     if ticker == 'KRW':
-                        price = 1.0
-                        eval_val = row['수량']
-                        buy_val = row['수량'] * row['매수단가']
+                        price, eval_val, buy_val = 1.0, row['수량'], row['수량'] * row['매수단가']
                     elif ticker == 'USD':
-                        price = usd_krw
+                        price, currency = usd_krw, 'USD'
                         eval_val = row['수량'] * usd_krw
                         buy_val = (row['매수단가'] * row['수량'] * usd_krw) if row['매수단가'] < 50 else (row['매수단가'] * row['수량'])
-                        currency = 'USD'
                     else:
                         price = get_current_price(ticker)
                         if row['국가'] == '미국':
-                            eval_val = price * row['수량'] * usd_krw
-                            buy_val = row['매수단가'] * row['수량'] * usd_krw
-                            currency = 'USD'
+                            eval_val, buy_val, currency = price * row['수량'] * usd_krw, row['매수단가'] * row['수량'] * usd_krw, 'USD'
                         else:
-                            eval_val = price * row['수량']
-                            buy_val = row['매수단가'] * row['수량']
+                            eval_val, buy_val = price * row['수량'], row['매수단가'] * row['수량']
                     
                     current_prices.append(price)
                     eval_values.append(eval_val)
@@ -164,28 +129,23 @@ if uploaded_file is not None:
             df['현재가'] = current_prices
             df['매수금액'] = buy_values
             df['평가금액'] = eval_values
-            df['수익률'] = df.apply(lambda x: ((x['평가금액'] - x['매수금액']) / x['매수금액']) if x['매수금액'] > 0 else 0, axis=1)
+            df['수익률'] = df.apply(lambda x: ((x['평가금액'] - x['매수금액']) / x['매수금액'] * 100) if x['매수금액'] > 0 else 0, axis=1)
             df['유형'] = df.apply(classify_asset_type_initial, axis=1)
             df['통화'] = currencies
-            
-            # 시뮬레이션용 컬럼 추가 (초기값 = 현재 수량)
             df['시뮬레이션 수량'] = df['수량']
             
             st.session_state['sim_data'] = df
-            st.session_state['usd_krw'] = usd_krw # 환율 고정
+            st.session_state['usd_krw'] = usd_krw
             
         except Exception as e:
-            st.error(f"파일 읽기 오류: {e}")
+            st.error(f"오류: {e}")
             st.stop()
 
-    # 세션에서 데이터 가져오기
     df = st.session_state['sim_data']
     usd_krw = st.session_state['usd_krw']
 
-    # ---------------------------------------------------------------------
-    # 5. 탭 구성
-    # ---------------------------------------------------------------------
-    tab1, tab2 = st.tabs(["📊 현재 포트폴리오", "🎛️ 리밸런싱 시뮬레이터"])
+    # 탭 구성
+    tab1, tab2, tab3 = st.tabs(["📊 대시보드", "🎛️ 시뮬레이션", "📝 원본 데이터"])
 
     # --- [TAB 1] 대시보드 ---
     with tab1:
@@ -195,12 +155,13 @@ if uploaded_file is not None:
         yield_rate = (profit / total_buy * 100) if total_buy > 0 else 0
         
         m1, m2, m3 = st.columns(3)
-        m1.metric("총 매수금액", f"{total_buy:,.0f} 원")
-        m2.metric("총 평가금액", f"{total_eval:,.0f} 원", f"{profit:+,.0f} 원")
+        # 콤마 제거 (format string 변경)
+        m1.metric("총 매수금액", f"{total_buy:.0f} 원")
+        m2.metric("총 평가금액", f"{total_eval:.0f} 원", f"{profit:+.0f} 원")
         m3.metric("총 수익률", f"{yield_rate:.2f} %", f"{yield_rate:.2f} %")
         
         st.divider()
-        st.subheader("📈 포트폴리오 구성 (4 View)")
+        st.subheader("📈 포트폴리오 구성")
         r1c1, r1c2 = st.columns(2)
         r2c1, r2c2 = st.columns(2)
         
@@ -209,111 +170,109 @@ if uploaded_file is not None:
         with r2c1: st.plotly_chart(create_pie(df, '국가', "3. 국가별 비중"), use_container_width=True, key='d3')
         with r2c2: st.plotly_chart(create_pie(df, '유형', "4. 유형별 비중"), use_container_width=True, key='d4')
 
+        st.divider()
+        st.subheader("📋 자산 상세")
+        
+        display_df = df[['종목명', '유형', '수량', '매수단가', '현재가', '수익률', '평가금액']].copy()
+        
+        # [수정] 콤마 제거 (.0f 사용)
+        styled_df = display_df.style\
+            .format({
+                '수량': '{:.2f}', 
+                '매수단가': '{:.0f}',
+                '현재가': '{:.0f}',
+                '수익률': '{:+.2f}%',
+                '평가금액': '{:.0f}'
+            })\
+            .map(color_profit, subset=['수익률'])
+
+        st.dataframe(
+            styled_df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={"평가금액": st.column_config.NumberColumn("평가금액 (KRW)")}
+        )
+
     # --- [TAB 2] 시뮬레이터 ---
     with tab2:
-        st.header("🛠️ 포트폴리오 리모델링")
+        st.header("🛠️ 리밸런싱 시뮬레이터")
         
-        # [기능 1] 종목 추가
-        with st.expander("➕ 새로운 종목 추가하기 (Ticker 검색)", expanded=False):
+        with st.expander("➕ 종목 추가 (Ticker 검색)", expanded=False):
             c_add1, c_add2 = st.columns([3, 1])
-            new_ticker = c_add1.text_input("티커 입력 (예: TSLA, AAPL, 005930.KS)", placeholder="미국주식 티커 or 한국주식 코드(.KS)")
-            if c_add2.button("검색 및 추가"):
+            new_ticker = c_add1.text_input("티커 (예: TSLA, 005930.KS)", key='add_input')
+            if c_add2.button("추가"):
                 if new_ticker:
-                    with st.spinner("정보 가져오는 중..."):
-                        info = get_stock_info(new_ticker.strip().upper())
-                        if info:
-                            # 기존 데이터프레임에 추가 (수량 0으로 시작)
-                            new_row = {
-                                '종목코드': info['종목코드'], '종목명': info['종목명'], '업종': info['업종'],
-                                '국가': info['국가'], '유형': info['유형'], '수량': 0, '매수단가': 0,
-                                '현재가': info['현재가'], '매수금액': 0, '평가금액': 0, '수익률': 0,
-                                '통화': info['currency'], '시뮬레이션 수량': 0 # 초기 0
-                            }
-                            st.session_state['sim_data'] = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-                            st.rerun() # 새로고침해서 표에 반영
-                        else:
-                            st.error("종목을 찾을 수 없습니다. 티커를 확인해주세요.")
+                    info = get_stock_info(new_ticker.strip().upper())
+                    if info:
+                        new_row = {
+                            '종목코드': info['종목코드'], '종목명': info['종목명'], '업종': info['업종'],
+                            '국가': info['국가'], '유형': info['유형'], '수량': 0, '매수단가': 0,
+                            '현재가': info['현재가'], '매수금액': 0, '평가금액': 0, '수익률': 0,
+                            '통화': info['currency'], '시뮬레이션 수량': 0
+                        }
+                        st.session_state['sim_data'] = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+                        st.rerun()
+                    else: st.error("종목 검색 실패")
 
         st.divider()
 
-        # 데이터 에디터 (시뮬레이션 수량 수정)
-        # 편집 가능한 컬럼만 추려서 보여줌
-        sim_view = st.session_state['sim_data'][['종목명', '현재가', '통화', '수량', '시뮬레이션 수량']].copy()
+        sim_view = st.session_state['sim_data'][['종목명', '현재가', '수량', '시뮬레이션 수량']].copy()
         
+        # [수정] 콤마 제거를 위해 format="%.0f" (혹은 그냥 None)
         edited_sim_view = st.data_editor(
             sim_view,
             column_config={
-                "현재가": st.column_config.NumberColumn("현재가", format="%d", disabled=True),
-                "통화": st.column_config.TextColumn("통화", width="small", disabled=True),
-                "수량": st.column_config.NumberColumn("현재 수량", format="%.2f", disabled=True),
-                "시뮬레이션 수량": st.column_config.NumberColumn("목표 수량 (수정)", format="%.2f", min_value=0, step=1)
+                "현재가": st.column_config.NumberColumn(format="%.0f", disabled=True),
+                "수량": st.column_config.NumberColumn("현재수량", format="%.2f", disabled=True),
+                "시뮬레이션 수량": st.column_config.NumberColumn("목표수량", format="%.2f", min_value=0, step=1)
             },
             use_container_width=True,
             hide_index=True,
             key='editor'
         )
 
-        # 수정된 수량을 원본 세션 데이터에 반영 및 재계산
-        # (주의: data_editor는 인덱스 순서대로 값을 뱉으므로 원본과 인덱스 매칭 필요)
+        # 재계산
         updated_df = st.session_state['sim_data'].copy()
         updated_df['시뮬레이션 수량'] = edited_sim_view['시뮬레이션 수량']
-        
-        # 환율 적용하여 예상 평가금액 계산
-        def calc_sim_eval(row):
-            price = row['현재가']
-            qty = row['시뮬레이션 수량']
-            if row['통화'] == 'USD' or row['종목코드'] == 'USD':
-                return price * qty * usd_krw
-            return price * qty
+        updated_df['예상 평가금액'] = updated_df.apply(lambda x: x['현재가'] * x['시뮬레이션 수량'] * (usd_krw if x['통화']=='USD' or x['종목코드']=='USD' else 1), axis=1)
 
-        updated_df['예상 평가금액'] = updated_df.apply(calc_sim_eval, axis=1)
-
-        # [기능 3] 예산 부족 계산
-        current_total_asset = total_eval # 현재 총 평가 자산 (내 돈의 한계)
-        sim_total_asset = updated_df['예상 평가금액'].sum() # 내가 사고 싶은 것들의 총합
-        
-        diff = current_total_asset - sim_total_asset
+        # 예산 계산
+        diff = total_eval - updated_df['예상 평가금액'].sum()
         
         st.divider()
+        c_budget, c_chart = st.columns([1, 2])
         
-        # 예산 상태 표시
-        col_res1, col_res2 = st.columns([1, 2])
-        
-        with col_res1:
-            st.markdown("### 💰 예산 현황")
-            st.write(f"현재 총 자산: **{current_total_asset:,.0f} 원**")
-            st.write(f"시뮬레이션 총액: **{sim_total_asset:,.0f} 원**")
-            
-            if diff >= 0:
-                st.success(f"✅ **{diff:,.0f} 원** 남음 (현금 확보 가능)")
-            else:
-                st.error(f"🚨 **{abs(diff):,.0f} 원** 부족합니다!")
-                st.caption("보유 현금(KRW/USD) 수량을 줄이거나, 매수 목표를 낮추세요.")
+        with c_budget:
+            st.markdown("### 💰 예산 체크")
+            st.metric("현재 총 자산", f"{total_eval:.0f} 원")
+            st.metric("시뮬레이션 총액", f"{updated_df['예상 평가금액'].sum():.0f} 원")
+            if diff >= 0: st.success(f"✅ {diff:.0f} 원 남음")
+            else: st.error(f"🚨 {abs(diff):.0f} 원 부족")
 
-        # [기능 2 & 4] 시뮬레이션 결과 4분할 차트 (색상 개선됨)
-        with col_res2:
-            st.markdown("### 🔮 리밸런싱 후 예상 포트폴리오")
-            t1, t2 = st.tabs(["구성 차트", "상세 데이터"])
-            
+        # [수정] 시뮬레이션 결과도 4분할 차트로 구성 (대시보드와 동일한 Layout)
+        with c_chart:
+            st.markdown("### 🔮 리밸런싱 결과")
+            t1, t2 = st.tabs(["차트 보기", "데이터 보기"])
             with t1:
-                sr1, sr2 = st.columns(2)
-                sr3, sr4 = st.columns(2)
+                sc1, sc2 = st.columns(2)
+                sc3, sc4 = st.columns(2)
                 # 시뮬레이션 데이터로 4개 차트 그리기
-                with sr1: st.plotly_chart(create_pie(updated_df, '종목명', "1. 종목"), use_container_width=True, key='s1')
-                with sr2: st.plotly_chart(create_pie(updated_df, '업종', "2. 업종"), use_container_width=True, key='s2')
-                with sr3: st.plotly_chart(create_pie(updated_df, '국가', "3. 국가"), use_container_width=True, key='s3')
-                with sr4: st.plotly_chart(create_pie(updated_df, '유형', "4. 유형"), use_container_width=True, key='s4')
-            
+                with sc1: st.plotly_chart(create_pie(updated_df, '종목명', "1. 종목"), use_container_width=True, key='s1')
+                with sc2: st.plotly_chart(create_pie(updated_df, '업종', "2. 업종"), use_container_width=True, key='s2')
+                with sc3: st.plotly_chart(create_pie(updated_df, '국가', "3. 국가"), use_container_width=True, key='s3')
+                with sc4: st.plotly_chart(create_pie(updated_df, '유형', "4. 유형"), use_container_width=True, key='s4')
             with t2:
-                # 상세 데이터 표 (Compact)
-                st.dataframe(
-                    updated_df[['종목명', '시뮬레이션 수량', '예상 평가금액', '유형']],
-                    column_config={
-                        "예상 평가금액": st.column_config.NumberColumn(format="%d 원")
-                    },
-                    use_container_width=True,
-                    hide_index=True
-                )
+                 # 여기도 콤마 제거
+                 st.dataframe(
+                     updated_df[['종목명', '시뮬레이션 수량', '예상 평가금액']], 
+                     use_container_width=True, 
+                     hide_index=True,
+                     column_config={"예상 평가금액": st.column_config.NumberColumn(format="%.0f")}
+                 )
+
+    # --- [TAB 3] 원본 데이터 ---
+    with tab3:
+        st.dataframe(df)
 
 else:
     st.info("👆 엑셀 파일을 업로드하면 시작됩니다.")
