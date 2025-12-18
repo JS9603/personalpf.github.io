@@ -27,8 +27,8 @@ if 'sim_df' not in st.session_state:
 # 상단 헤더
 col_title, col_time = st.columns([0.7, 0.3])
 with col_title:
-    st.title("🏦 포트폴리오 매니저 v4.9.3 (Full Restore)")
-    st.markdown("##### 🇺🇸 해외주식 + 🇰🇷 국내주식 통합 대시보드")
+    st.title("🏦 포트폴리오 매니저 v4.9.4")
+    st.markdown("정보 수급처 변경")
 with col_time:
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     st.write("") 
@@ -104,7 +104,6 @@ def classify_asset_type(row):
     if any(k in name for k in etf_keywords) or any(k in ticker for k in etf_keywords): return 'ETF'
     return '개별주식'
 
-# [차트 서식] 우상단 범례 + 내부 퍼센트 표시
 def create_pie(data, names, title, value_col='평가금액'):
     if data.empty or value_col not in data.columns: return None
     
@@ -254,13 +253,14 @@ if uploaded_file is not None:
         
         st.divider()
         
+        # [Fix] 각 차트마다 고유 key 추가
         r1_c1, r1_c2 = st.columns(2)
-        with r1_c1: st.plotly_chart(create_pie(all_df, '종목명', "1. 종목별 비중"), use_container_width=True)
-        with r1_c2: st.plotly_chart(create_pie(all_df, '업종', "2. 업종(섹터)별 비중"), use_container_width=True)
+        with r1_c1: st.plotly_chart(create_pie(all_df, '종목명', "1. 종목별 비중"), use_container_width=True, key='t1_c1')
+        with r1_c2: st.plotly_chart(create_pie(all_df, '업종', "2. 업종(섹터)별 비중"), use_container_width=True, key='t1_c2')
             
         r2_c1, r2_c2 = st.columns(2)
-        with r2_c1: st.plotly_chart(create_pie(all_df, '국가', "3. 국가별 비중"), use_container_width=True)
-        with r2_c2: st.plotly_chart(create_pie(all_df, '유형', "4. 자산 유형별 비중"), use_container_width=True)
+        with r2_c1: st.plotly_chart(create_pie(all_df, '국가', "3. 국가별 비중"), use_container_width=True, key='t1_c3')
+        with r2_c2: st.plotly_chart(create_pie(all_df, '유형', "4. 자산 유형별 비중"), use_container_width=True, key='t1_c4')
 
         st.divider()
         st.subheader("📋 전체 자산 상세")
@@ -272,7 +272,7 @@ if uploaded_file is not None:
             use_container_width=True, hide_index=True
         )
 
-    # --- [TAB 2] 계좌별 상세 (복구됨) ---
+    # --- [TAB 2] 계좌별 상세 ---
     with tab2:
         sheet_names = list(portfolio_dict.keys())
         selected_sheet = st.selectbox("계좌 선택:", sheet_names)
@@ -281,16 +281,15 @@ if uploaded_file is not None:
         t_eval = target_df['평가금액'].sum()
         t_profit = t_eval - target_df['매수금액'].sum()
         
-        # 메트릭 표시
         m1, m2 = st.columns(2)
         m1.metric("계좌 평가금액", f"{t_eval:,.0f} 원", f"{t_profit:+,.0f} 원")
         
         st.divider()
         
-        # [차트 복구] 종목 비중 + 유형 비중 (2열)
+        # [Fix] 각 차트마다 고유 key 추가
         c1, c2 = st.columns(2)
-        with c1: st.plotly_chart(create_pie(target_df, '종목명', "1. 종목 비중"), use_container_width=True)
-        with c2: st.plotly_chart(create_pie(target_df, '유형', "2. 유형 비중"), use_container_width=True)
+        with c1: st.plotly_chart(create_pie(target_df, '종목명', "1. 종목 비중"), use_container_width=True, key='t2_c1')
+        with c2: st.plotly_chart(create_pie(target_df, '유형', "2. 유형 비중"), use_container_width=True, key='t2_c2')
         
         st.caption(f"📋 {selected_sheet} 보유 종목")
         st.dataframe(
@@ -300,7 +299,7 @@ if uploaded_file is not None:
             use_container_width=True, hide_index=True
         )
 
-    # --- [TAB 3] 시뮬레이션 (복구됨) ---
+    # --- [TAB 3] 시뮬레이션 ---
     with tab3:
         st.header("🎛️ 리밸런싱 시뮬레이션")
         sim_sheets = list(portfolio_dict.keys())
@@ -364,14 +363,14 @@ if uploaded_file is not None:
             if diff >= 0: st.success(f"잔액: {diff:,.0f} 원")
             else: st.error(f"부족: {abs(diff):,.0f} 원")
         
-        # [차트 복구] 3분할 그리드 (종목, 업종, 유형) + 서식 통일
         st.markdown("##### 📈 시뮬레이션 결과 분석")
         c1, c2, c3 = st.columns(3)
         valid_sim = sim_df[sim_df['예상 평가금액'] > 0]
         
-        with c1: st.plotly_chart(create_pie(valid_sim, '종목명', "1. 종목 비중"), use_container_width=True)
-        with c2: st.plotly_chart(create_pie(valid_sim, '업종', "2. 업종 비중"), use_container_width=True)
-        with c3: st.plotly_chart(create_pie(valid_sim, '유형', "3. 유형 비중"), use_container_width=True)
+        # [Fix] 각 차트마다 고유 key 추가 (에러 발생했던 지점)
+        with c1: st.plotly_chart(create_pie(valid_sim, '종목명', "1. 종목 비중"), use_container_width=True, key='t3_c1')
+        with c2: st.plotly_chart(create_pie(valid_sim, '업종', "2. 업종 비중"), use_container_width=True, key='t3_c2')
+        with c3: st.plotly_chart(create_pie(valid_sim, '유형', "3. 유형 비중"), use_container_width=True, key='t3_c3')
 
     # --- [TAB 4] 원본 데이터 ---
     with tab4:
