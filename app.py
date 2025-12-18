@@ -10,19 +10,19 @@ import io
 st.set_page_config(page_title="Multi-Account Portfolio", layout="wide", page_icon="🏦")
 
 if 'portfolio_data' not in st.session_state:
-    st.session_state['portfolio_data'] = None # 전체 데이터 (Dict 형태: {'계좌명': DF})
+    st.session_state['portfolio_data'] = None
 
 if 'search_info' not in st.session_state:
     st.session_state['search_info'] = None
 
 if 'sim_target_sheet' not in st.session_state:
-    st.session_state['sim_target_sheet'] = None # 시뮬레이션 중인 계좌명
+    st.session_state['sim_target_sheet'] = None
 
 if 'sim_df' not in st.session_state:
-    st.session_state['sim_df'] = None # 시뮬레이션용 임시 데이터프레임
+    st.session_state['sim_df'] = None
 
-st.title("개인 포트폴리오 관리 프로그램 v4.0")
-st.markdown("멀티 어카운트 기능추가, 시뮬레이션 검색기능 추가")
+st.title("개인 포트폴리오 관리 프로그램 v4.1")
+st.markdown("멀티 어카운트 기능추가, 포트폴리오 시뮬레이션 기능추가")
 
 # -----------------------------------------------------------------------------
 # 2. 유틸리티 함수
@@ -83,14 +83,12 @@ def color_profit(val):
     return 'color: black'
 
 def calculate_portfolio(df, usd_krw):
-    """데이터프레임 계산 로직 (가격, 평가금액 등)"""
     current_prices, eval_values, buy_values, currencies = [], [], [], []
     
     for index, row in df.iterrows():
         ticker = str(row['종목코드']).upper().strip()
         currency = 'KRW'
         
-        # 가격 조회 및 통화 설정
         if ticker == 'KRW':
             price, eval_val, buy_val = 1.0, row['수량'], row['수량'] * row['매수단가']
         elif ticker == 'USD':
@@ -115,39 +113,23 @@ def calculate_portfolio(df, usd_krw):
     df['수익률'] = df.apply(lambda x: ((x['평가금액'] - x['매수금액']) / x['매수금액'] * 100) if x['매수금액'] > 0 else 0, axis=1)
     df['유형'] = df.apply(classify_asset_type_initial, axis=1)
     df['통화'] = currencies
-    # 시뮬레이션용 초기값
     if '시뮬레이션 수량' not in df.columns:
         df['시뮬레이션 수량'] = df['수량']
-        
     return df
 
 # -----------------------------------------------------------------------------
-# 3. 엑셀 다운로드 (멀티 시트 템플릿)
+# 3. 엑셀 다운로드
 # -----------------------------------------------------------------------------
 def get_template_excel():
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        # 시트 1: 국내계좌
-        df1 = pd.DataFrame({
-            '종목코드': ['000660.KS', 'KRW'],
-            '종목명': ['SK하이닉스', '원화예수금'],
-            '업종': ['반도체', '현금'], '국가': ['한국', '한국'],
-            '수량': [10, 1000000], '매수단가': [180000, 1]
-        })
-        df1.to_excel(writer, index=False, sheet_name='국내계좌(예시)')
-        
-        # 시트 2: 미국계좌
-        df2 = pd.DataFrame({
-            '종목코드': ['SPLG', 'USD'],
-            '종목명': ['S&P 500', '달러예수금'],
-            '업종': ['지수추종', '현금'], '국가': ['미국', '미국'],
-            '수량': [15, 500], '매수단가': [68.20, 1]
-        })
-        df2.to_excel(writer, index=False, sheet_name='미국계좌(예시)')
-        
+        df1 = pd.DataFrame({'종목코드': ['000660.KS', 'KRW'], '종목명': ['SK하이닉스', '원화예수금'], '업종': ['반도체', '현금'], '국가': ['한국', '한국'], '수량': [10, 1000000], '매수단가': [180000, 1]})
+        df1.to_excel(writer, index=False, sheet_name='국내계좌')
+        df2 = pd.DataFrame({'종목코드': ['SPLG', 'USD'], '종목명': ['S&P 500', '달러예수금'], '업종': ['지수추종', '현금'], '국가': ['미국', '미국'], '수량': [15, 500], '매수단가': [68.20, 1]})
+        df2.to_excel(writer, index=False, sheet_name='미국계좌')
     return output.getvalue()
 
-with st.expander("⬇️ 엑셀 양식 다운로드 (멀티시트 지원)"):
+with st.expander("⬇️ 엑셀 양식 다운로드"):
     st.download_button(label="엑셀 양식 받기 (.xlsx)", data=get_template_excel(), file_name='multi_portfolio.xlsx')
 
 # -----------------------------------------------------------------------------
@@ -156,48 +138,38 @@ with st.expander("⬇️ 엑셀 양식 다운로드 (멀티시트 지원)"):
 uploaded_file = st.file_uploader("📂 엑셀 파일을 업로드하세요 (초기화하려면 새로고침)", type=['xlsx'])
 
 if uploaded_file is not None:
-    # 1) 최초 로드 시 모든 시트를 읽어서 처리
     if st.session_state['portfolio_data'] is None:
         try:
             usd_krw = get_exchange_rate()
-            # 모든 시트 읽기 (sheet_name=None -> Dict 반환)
             xls = pd.read_excel(uploaded_file, sheet_name=None)
             
             processed_data = {}
-            with st.spinner('모든 계좌 정보를 분석 중입니다...'):
+            with st.spinner('계좌 분석 중...'):
                 for sheet_name, df_sheet in xls.items():
-                    # 필수 컬럼 체크
                     required = ['종목코드', '종목명', '수량', '매수단가']
-                    if not all(col in df_sheet.columns for col in required):
-                        continue # 형식이 안 맞으면 패스
-                        
-                    # 각 시트별 계산 수행
+                    if not all(col in df_sheet.columns for col in required): continue
                     processed_df = calculate_portfolio(df_sheet.copy(), usd_krw)
-                    processed_df['계좌명'] = sheet_name # 출처 표시
+                    processed_df['계좌명'] = sheet_name
                     processed_data[sheet_name] = processed_df
             
             if not processed_data:
-                st.error("유효한 데이터가 있는 시트가 없습니다.")
+                st.error("유효한 데이터 시트가 없습니다.")
                 st.stop()
-                
+            
             st.session_state['portfolio_data'] = processed_data
             st.session_state['usd_krw'] = usd_krw
             
         except Exception as e:
-            st.error(f"파일 읽기 오류: {e}")
+            st.error(f"오류: {e}")
             st.stop()
 
-    # 데이터 로드
     portfolio_dict = st.session_state['portfolio_data']
     usd_krw = st.session_state['usd_krw']
-    
-    # 통합 데이터프레임 생성 (전체 요약용)
     all_df = pd.concat(portfolio_dict.values(), ignore_index=True)
 
-    # 탭 구성
     tab1, tab2, tab3, tab4 = st.tabs(["📊 통합 요약", "📂 계좌별 현황", "🎛️ 시뮬레이션", "📝 원본 데이터"])
 
-    # --- [TAB 1] 통합 요약 (All Accounts) ---
+    # --- [TAB 1] 통합 요약 ---
     with tab1:
         st.subheader("🌐 전체 자산 통합 리포트")
         
@@ -220,36 +192,45 @@ if uploaded_file is not None:
         with r2c1: st.plotly_chart(create_pie(all_df, '국가', "3. 국가별 비중"), use_container_width=True, key='all_c3')
         with r2c2: st.plotly_chart(create_pie(all_df, '유형', "4. 유형별 비중"), use_container_width=True, key='all_c4')
 
-    # --- [TAB 2] 계좌별 현황 (Individual Account) ---
+        # [추가됨] 통합 자산 상세 테이블
+        st.divider()
+        st.subheader("📋 통합 자산 상세")
+        
+        # '계좌명'을 맨 앞으로
+        summary_cols = ['계좌명', '종목명', '유형', '수량', '매수단가', '현재가', '수익률', '평가금액']
+        summary_display = all_df[summary_cols].copy()
+        
+        st.dataframe(
+            summary_display.style.format({
+                '수량': '{:,.2f}', '매수단가': '{:,.0f}', '현재가': '{:,.0f}', '수익률': '{:+.2f}%', '평가금액': '{:,.0f}'
+            }).map(color_profit, subset=['수익률']),
+            use_container_width=True, hide_index=True
+        )
+
+    # --- [TAB 2] 계좌별 현황 ---
     with tab2:
         st.subheader("📂 개별 계좌 상세 조회")
         
-        # 계좌 선택 드롭다운
         sheet_names = list(portfolio_dict.keys())
-        selected_sheet = st.selectbox("확인할 계좌를 선택하세요:", sheet_names, key='view_sheet_select')
-        
-        # 선택된 계좌 데이터 가져오기
+        selected_sheet = st.selectbox("확인할 계좌:", sheet_names, key='view_sheet')
         target_df = portfolio_dict[selected_sheet]
         
-        # 요약 지표
         t_eval = target_df['평가금액'].sum()
         t_buy = target_df['매수금액'].sum()
         t_profit = t_eval - t_buy
         t_yield = (t_profit / t_buy * 100) if t_buy > 0 else 0
         
         c1, c2, c3 = st.columns(3)
-        c1.metric(f"{selected_sheet} 매수금액", f"{t_buy:,.0f} 원")
-        c2.metric(f"{selected_sheet} 평가금액", f"{t_eval:,.0f} 원", f"{t_profit:+,.0f} 원")
-        c3.metric(f"{selected_sheet} 수익률", f"{t_yield:.2f} %", f"{t_yield:.2f} %")
+        c1.metric(f"매수금액", f"{t_buy:,.0f} 원")
+        c2.metric(f"평가금액", f"{t_eval:,.0f} 원", f"{t_profit:+,.0f} 원")
+        c3.metric(f"수익률", f"{t_yield:.2f} %", f"{t_yield:.2f} %")
         
         st.divider()
-        
-        # 계좌별 차트 & 테이블
         sc1, sc2 = st.columns(2)
-        with sc1: st.plotly_chart(create_pie(target_df, '종목명', "종목 비중"), use_container_width=True, key=f'view_c1_{selected_sheet}')
-        with sc2: st.plotly_chart(create_pie(target_df, '업종', "업종 비중"), use_container_width=True, key=f'view_c2_{selected_sheet}')
+        with sc1: st.plotly_chart(create_pie(target_df, '종목명', "종목 비중"), use_container_width=True, key=f'v1_{selected_sheet}')
+        with sc2: st.plotly_chart(create_pie(target_df, '업종', "업종 비중"), use_container_width=True, key=f'v2_{selected_sheet}')
         
-        st.caption(f"📋 {selected_sheet} 보유 종목 상세")
+        st.caption(f"📋 {selected_sheet} 보유 종목")
         view_display = target_df[['종목명', '유형', '수량', '매수단가', '현재가', '수익률', '평가금액']].copy()
         st.dataframe(
             view_display.style.format({
@@ -258,36 +239,29 @@ if uploaded_file is not None:
             use_container_width=True, hide_index=True
         )
 
-    # --- [TAB 3] 시뮬레이션 (Simulation) ---
+    # --- [TAB 3] 시뮬레이션 ---
     with tab3:
         st.header("🎛️ 계좌별 리밸런싱 시뮬레이터")
         
-        # 1. 시뮬레이션 대상 계좌 선택
-        sim_sheet_names = list(portfolio_dict.keys())
-        selected_sim_sheet = st.selectbox("시뮬레이션할 계좌 선택:", sim_sheet_names, key='sim_sheet_select')
+        sim_sheets = list(portfolio_dict.keys())
+        selected_sim_sheet = st.selectbox("시뮬레이션할 계좌:", sim_sheets, key='sim_sheet')
         
-        # 계좌가 변경되면 세션 데이터 리셋 (초기화)
         if st.session_state['sim_target_sheet'] != selected_sim_sheet:
             st.session_state['sim_target_sheet'] = selected_sim_sheet
-            # 원본 데이터 복사해서 시뮬레이션용 데이터 생성
             st.session_state['sim_df'] = portfolio_dict[selected_sim_sheet].copy()
             st.rerun()
             
-        # 현재 시뮬레이션 중인 데이터
         sim_df = st.session_state['sim_df']
-        current_total = portfolio_dict[selected_sim_sheet]['평가금액'].sum() # 원본 총액
+        current_total = portfolio_dict[selected_sim_sheet]['평가금액'].sum()
 
-        # 종목 추가 기능
-        with st.expander(f"➕ '{selected_sim_sheet}'에 종목 추가하기", expanded=False):
+        with st.expander(f"➕ '{selected_sim_sheet}'에 종목 추가", expanded=False):
             c_add1, c_add2 = st.columns([3, 1])
-            new_ticker = c_add1.text_input("티커 (예: TSLA, 005930.KS)", key='sim_add_input')
+            new_ticker = c_add1.text_input("티커 (예: TSLA)", key='sim_add')
             if c_add2.button("검색"):
                 if new_ticker:
                     info = get_stock_info(new_ticker.strip().upper())
-                    if info:
-                        st.session_state['search_info'] = info
-                    else:
-                        st.error("종목 없음")
+                    if info: st.session_state['search_info'] = info
+                    else: st.error("종목 없음")
             
             if st.session_state['search_info']:
                 info = st.session_state['search_info']
@@ -305,7 +279,6 @@ if uploaded_file is not None:
 
         st.divider()
 
-        # Data Editor (수정)
         sim_view_cols = ['종목코드', '종목명', '유형', '통화', '현재가', '시뮬레이션 수량']
         edited_df = st.data_editor(
             sim_df[sim_view_cols],
@@ -318,7 +291,6 @@ if uploaded_file is not None:
             num_rows="dynamic", use_container_width=True, hide_index=True, key=f'editor_{selected_sim_sheet}'
         )
 
-        # 재계산
         sim_result_df = edited_df.copy()
         
         def calc_sim_eval(row):
@@ -332,7 +304,6 @@ if uploaded_file is not None:
 
         sim_result_df['예상 평가금액'] = sim_result_df.apply(calc_sim_eval, axis=1)
         
-        # 메타데이터 복원
         meta_lookup = sim_df.set_index('종목코드')[['업종', '국가']].to_dict('index')
         sim_result_df['업종'] = sim_result_df.apply(lambda x: meta_lookup.get(x.get('종목코드'), {}).get('업종', '기타'), axis=1)
         sim_result_df['국가'] = sim_result_df.apply(lambda x: meta_lookup.get(x.get('종목코드'), {}).get('국가', '기타'), axis=1)
@@ -367,8 +338,7 @@ if uploaded_file is not None:
 
     # --- [TAB 4] 원본 데이터 ---
     with tab4:
-        st.caption("업로드된 모든 계좌의 원본 통합 데이터입니다.")
         st.dataframe(all_df)
 
 else:
-    st.info("👆 엑셀 파일을 업로드해주세요. (파일 내 시트 이름이 곧 계좌 이름이 됩니다.)")
+    st.info("👆 엑셀 파일을 업로드해주세요.")
