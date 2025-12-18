@@ -24,10 +24,11 @@ if 'sim_target_sheet' not in st.session_state:
 if 'sim_df' not in st.session_state:
     st.session_state['sim_df'] = None
 
+# 상단 헤더
 col_title, col_time = st.columns([0.7, 0.3])
 with col_title:
-    st.title("🏦 포트폴리오 매니저 v4.9.1")
-    st.markdown("정보 수급처 변경")
+    st.title("🏦 포트폴리오 매니저 v4.9.3 (Full Restore)")
+    st.markdown("##### 🇺🇸 해외주식 + 🇰🇷 국내주식 통합 대시보드")
 with col_time:
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     st.write("") 
@@ -103,11 +104,22 @@ def classify_asset_type(row):
     if any(k in name for k in etf_keywords) or any(k in ticker for k in etf_keywords): return 'ETF'
     return '개별주식'
 
+# [차트 서식] 우상단 범례 + 내부 퍼센트 표시
 def create_pie(data, names, title, value_col='평가금액'):
     if data.empty or value_col not in data.columns: return None
+    
     fig = px.pie(data, values=value_col, names=names, title=title, hole=0.4)
-    fig.update_traces(textposition='inside', textinfo='percent+label')
-    fig.update_layout(margin=dict(t=40, b=10, l=10, r=10), showlegend=False)
+    fig.update_traces(textposition='inside', textinfo='percent')
+    
+    fig.update_layout(
+        showlegend=True,
+        legend=dict(
+            orientation="v",
+            yanchor="top", y=1,
+            xanchor="left", x=1.05
+        ),
+        margin=dict(t=40, b=20, l=10, r=0)
+    )
     return fig
 
 def color_profit(val):
@@ -135,23 +147,17 @@ def calculate_portfolio(df, usd_krw):
         elif ticker == 'USD':
             price = usd_krw
             eval_val = qty * usd_krw
-            # [수정됨] 달러 현금 매수금액 계산 로직 수정
-            # 매수단가가 50보다 작으면(예: 1달러라고 적은 경우) -> 현재 환율 곱함 (추정)
-            # 매수단가가 50보다 크면(예: 1300원이라고 적은 경우) -> 그대로 사용 (이미 KRW)
             if avg_price < 50: 
                 buy_val = qty * avg_price * usd_krw 
             else:
                 buy_val = qty * avg_price
-            
             currency = 'USD'
         
         # 2. 주식
         else:
             price = get_current_price(ticker)
-            # 미국 주식이거나 통화가 USD인 경우
             if country == '미국' or ticker == 'USD' or (not ticker.endswith('.KS') and not ticker.isdigit()):
                 eval_val = price * qty * usd_krw
-                # 해외주식은 매수단가가 보통 '달러'로 기입되므로 환율 곱함
                 buy_val = avg_price * qty * usd_krw
                 currency = 'USD'
             else:
@@ -249,16 +255,12 @@ if uploaded_file is not None:
         st.divider()
         
         r1_c1, r1_c2 = st.columns(2)
-        with r1_c1: 
-            st.plotly_chart(create_pie(all_df, '종목명', "1. 종목별 비중"), use_container_width=True)
-        with r1_c2: 
-            st.plotly_chart(create_pie(all_df, '업종', "2. 업종(섹터)별 비중"), use_container_width=True)
+        with r1_c1: st.plotly_chart(create_pie(all_df, '종목명', "1. 종목별 비중"), use_container_width=True)
+        with r1_c2: st.plotly_chart(create_pie(all_df, '업종', "2. 업종(섹터)별 비중"), use_container_width=True)
             
         r2_c1, r2_c2 = st.columns(2)
-        with r2_c1: 
-            st.plotly_chart(create_pie(all_df, '국가', "3. 국가별 비중"), use_container_width=True)
-        with r2_c2: 
-            st.plotly_chart(create_pie(all_df, '유형', "4. 자산 유형별 비중"), use_container_width=True)
+        with r2_c1: st.plotly_chart(create_pie(all_df, '국가', "3. 국가별 비중"), use_container_width=True)
+        with r2_c2: st.plotly_chart(create_pie(all_df, '유형', "4. 자산 유형별 비중"), use_container_width=True)
 
         st.divider()
         st.subheader("📋 전체 자산 상세")
@@ -270,7 +272,7 @@ if uploaded_file is not None:
             use_container_width=True, hide_index=True
         )
 
-    # --- [TAB 2] 계좌별 상세 ---
+    # --- [TAB 2] 계좌별 상세 (복구됨) ---
     with tab2:
         sheet_names = list(portfolio_dict.keys())
         selected_sheet = st.selectbox("계좌 선택:", sheet_names)
@@ -279,19 +281,26 @@ if uploaded_file is not None:
         t_eval = target_df['평가금액'].sum()
         t_profit = t_eval - target_df['매수금액'].sum()
         
-        c1, c2 = st.columns([1, 2])
-        with c1:
-            st.metric("계좌 평가금액", f"{t_eval:,.0f} 원", f"{t_profit:+,.0f} 원")
-            st.plotly_chart(create_pie(target_df, '종목명', "종목 비중"), use_container_width=True)
-        with c2:
-            st.dataframe(
-                target_df[['종목명', '업종', '수량', '매수단가', '현재가', '수익률', '평가금액']].style.format({
-                    '수량': '{:,.2f}', '매수단가': '{:,.0f}', '현재가': '{:,.0f}', '수익률': '{:+.2f}%', '평가금액': '{:,.0f}'
-                }).map(color_profit, subset=['수익률']),
-                use_container_width=True, hide_index=True
-            )
+        # 메트릭 표시
+        m1, m2 = st.columns(2)
+        m1.metric("계좌 평가금액", f"{t_eval:,.0f} 원", f"{t_profit:+,.0f} 원")
+        
+        st.divider()
+        
+        # [차트 복구] 종목 비중 + 유형 비중 (2열)
+        c1, c2 = st.columns(2)
+        with c1: st.plotly_chart(create_pie(target_df, '종목명', "1. 종목 비중"), use_container_width=True)
+        with c2: st.plotly_chart(create_pie(target_df, '유형', "2. 유형 비중"), use_container_width=True)
+        
+        st.caption(f"📋 {selected_sheet} 보유 종목")
+        st.dataframe(
+            target_df[['종목명', '업종', '수량', '매수단가', '현재가', '수익률', '평가금액']].style.format({
+                '수량': '{:,.2f}', '매수단가': '{:,.0f}', '현재가': '{:,.0f}', '수익률': '{:+.2f}%', '평가금액': '{:,.0f}'
+            }).map(color_profit, subset=['수익률']),
+            use_container_width=True, hide_index=True
+        )
 
-    # --- [TAB 3] 시뮬레이션 ---
+    # --- [TAB 3] 시뮬레이션 (복구됨) ---
     with tab3:
         st.header("🎛️ 리밸런싱 시뮬레이션")
         sim_sheets = list(portfolio_dict.keys())
@@ -354,9 +363,15 @@ if uploaded_file is not None:
             st.metric("시뮬레이션 후", f"{sim_total:,.0f} 원")
             if diff >= 0: st.success(f"잔액: {diff:,.0f} 원")
             else: st.error(f"부족: {abs(diff):,.0f} 원")
-            
-        with c_res2:
-            st.plotly_chart(create_pie(sim_df[sim_df['예상 평가금액']>0], '종목명', "시뮬레이션 비중", '예상 평가금액'), use_container_width=True)
+        
+        # [차트 복구] 3분할 그리드 (종목, 업종, 유형) + 서식 통일
+        st.markdown("##### 📈 시뮬레이션 결과 분석")
+        c1, c2, c3 = st.columns(3)
+        valid_sim = sim_df[sim_df['예상 평가금액'] > 0]
+        
+        with c1: st.plotly_chart(create_pie(valid_sim, '종목명', "1. 종목 비중"), use_container_width=True)
+        with c2: st.plotly_chart(create_pie(valid_sim, '업종', "2. 업종 비중"), use_container_width=True)
+        with c3: st.plotly_chart(create_pie(valid_sim, '유형', "3. 유형 비중"), use_container_width=True)
 
     # --- [TAB 4] 원본 데이터 ---
     with tab4:
