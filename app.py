@@ -24,11 +24,10 @@ if 'sim_target_sheet' not in st.session_state:
 if 'sim_df' not in st.session_state:
     st.session_state['sim_df'] = None
 
-# 상단 레이아웃
 col_title, col_time = st.columns([0.7, 0.3])
 with col_title:
-    st.title("🏦 포트폴리오 매니저 v4.9")
-    st.markdown("정보수급처 변경")
+    st.title("🏦 포트폴리오 매니저 v4.9.1")
+    st.markdown("정보 수급처 변경")
 with col_time:
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     st.write("") 
@@ -38,7 +37,6 @@ with col_time:
 # 2. 데이터 처리 함수
 # -----------------------------------------------------------------------------
 
-# [환율] 네이버 금융 실시간 조회
 @st.cache_data(ttl=60)
 def get_exchange_rate():
     try:
@@ -56,18 +54,15 @@ def get_all_exchange_rates():
     except: pass
     return rates
 
-# [가격] 하이브리드 방식 (KRX + Yahoo)
 def get_current_price(ticker):
     ticker = str(ticker).strip().upper()
     try:
-        # 1. 한국 주식 (숫자 6자리 or .KS/.KQ)
         if (ticker.isdigit() and len(ticker) == 6) or ticker.endswith('.KS') or ticker.endswith('.KQ'):
             code = ticker.split('.')[0]
             df = fdr.DataReader(code)
             if not df.empty:
                 return df['Close'].iloc[-1]
             return 0.0
-        # 2. 미국/해외 주식 (Yahoo)
         else:
             ticker_obj = yf.Ticker(ticker)
             hist = ticker_obj.history(period="1d")
@@ -77,14 +72,11 @@ def get_current_price(ticker):
     except:
         return 0.0
 
-# [종목 정보] 검색 및 자동채우기용
 def get_stock_info_safe(ticker):
     ticker = str(ticker).strip().upper()
     try:
         price = get_current_price(ticker)
         if price == 0: return None
-
-        # 기본 메타데이터 확보 시도
         try:
             info = yf.Ticker(ticker).info
             name = info.get('shortName', ticker)
@@ -96,7 +88,6 @@ def get_stock_info_safe(ticker):
                 'currency': 'KRW' if ticker.endswith('.KS') or ticker.isdigit() else 'USD'
             }
         except:
-            # 실패 시 최소 정보
             return {
                 '종목코드': ticker, '종목명': ticker, '업종': '기타', '현재가': price,
                 '국가': '기타', '유형': '기타', 'currency': 'KRW'
@@ -114,7 +105,6 @@ def classify_asset_type(row):
 
 def create_pie(data, names, title, value_col='평가금액'):
     if data.empty or value_col not in data.columns: return None
-    # UI: 도넛 차트 레이아웃 복구
     fig = px.pie(data, values=value_col, names=names, title=title, hole=0.4)
     fig.update_traces(textposition='inside', textinfo='percent+label')
     fig.update_layout(margin=dict(t=40, b=10, l=10, r=10), showlegend=False)
@@ -140,23 +130,29 @@ def calculate_portfolio(df, usd_krw):
         if ticker == 'KRW':
             price = 1.0
             eval_val = qty
-            buy_val = qty * avg_price # 보통 1*수량
+            buy_val = qty * avg_price
             currency = 'KRW'
         elif ticker == 'USD':
             price = usd_krw
             eval_val = qty * usd_krw
-            buy_val = qty * avg_price * usd_krw if avg_price < 5000 else qty * avg_price
+            # [수정됨] 달러 현금 매수금액 계산 로직 수정
+            # 매수단가가 50보다 작으면(예: 1달러라고 적은 경우) -> 현재 환율 곱함 (추정)
+            # 매수단가가 50보다 크면(예: 1300원이라고 적은 경우) -> 그대로 사용 (이미 KRW)
+            if avg_price < 50: 
+                buy_val = qty * avg_price * usd_krw 
+            else:
+                buy_val = qty * avg_price
+            
             currency = 'USD'
         
-        # 2. 주식 (핵심 수정 부분)
+        # 2. 주식
         else:
             price = get_current_price(ticker)
-            
-            # 미국 주식이거나 통화가 USD인 경우 환율 적용
-            # (매수금액 계산 시에도 환율을 곱해줘야 총 매수금액이 정상적으로 잡힘)
+            # 미국 주식이거나 통화가 USD인 경우
             if country == '미국' or ticker == 'USD' or (not ticker.endswith('.KS') and not ticker.isdigit()):
                 eval_val = price * qty * usd_krw
-                buy_val = avg_price * qty * usd_krw # [수정] 매수금액에도 환율 적용
+                # 해외주식은 매수단가가 보통 '달러'로 기입되므로 환율 곱함
+                buy_val = avg_price * qty * usd_krw
                 currency = 'USD'
             else:
                 eval_val = price * qty
@@ -175,7 +171,6 @@ def calculate_portfolio(df, usd_krw):
     df['유형'] = df.apply(classify_asset_type, axis=1)
     df['통화'] = currencies
     
-    # 업종 컬럼 보장
     if '업종' not in df.columns: df['업종'] = '기타'
     df['업종'] = df['업종'].fillna('기타')
     
@@ -253,13 +248,10 @@ if uploaded_file is not None:
         
         st.divider()
         
-        # [차트 복구] 4분할 그리드 (종목, 업종, 국가, 유형)
-        # 계좌별 비중은 제거하고 업종으로 대체
         r1_c1, r1_c2 = st.columns(2)
         with r1_c1: 
             st.plotly_chart(create_pie(all_df, '종목명', "1. 종목별 비중"), use_container_width=True)
         with r1_c2: 
-            # [요청반영] 계좌 대신 업종 표시
             st.plotly_chart(create_pie(all_df, '업종', "2. 업종(섹터)별 비중"), use_container_width=True)
             
         r2_c1, r2_c2 = st.columns(2)
