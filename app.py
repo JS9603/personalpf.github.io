@@ -37,11 +37,15 @@ if 'sim_target_sheet' not in st.session_state:
 if 'sim_df' not in st.session_state:
     st.session_state['sim_df'] = None
 
+# [추가] 납입원금 저장을 위한 세션
+if 'user_principals' not in st.session_state:
+    st.session_state['user_principals'] = {}
+
 # 상단 헤더
 col_title, col_time = st.columns([0.7, 0.3])
 with col_title:
-    st.title("🏦 포트폴리오 매니저 v5.4")
-    st.markdown("Final Fix (한글 종목명 표시 수정)")
+    st.title("🏦 포트폴리오 매니저 v5.5")
+    st.markdown("퇴직연금 관리기능 추가, 납입금액 기능추가")
 with col_time:
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     st.write("") 
@@ -74,14 +78,12 @@ def get_all_exchange_rates():
 @st.cache_data(ttl=3600*24)
 def get_krx_code_map():
     try:
-        # KRX 전체 리스트 가져오기 (이름 -> 코드)
         df = fdr.StockListing('KRX')
         name_to_code = dict(zip(df['Name'], df['Code']))
         return name_to_code
     except:
         return {}
 
-# 미국 주식 한글 매핑 (필요시 추가)
 US_STOCK_MAP = {
     '애플': 'AAPL', '마이크로소프트': 'MSFT', '테슬라': 'TSLA', '엔비디아': 'NVDA',
     '구글': 'GOOGL', '아마존': 'AMZN', '메타': 'META', '넷플릭스': 'NFLX',
@@ -92,26 +94,20 @@ US_STOCK_MAP = {
     'IAU': 'IAU', '금': 'IAU', '골드': 'IAU', 'GLD': 'GLD' 
 }
 
-# 종목코드 -> 한글명 역매핑 (미국주식용)
 TICKER_TO_KOREAN = {v: k for k, v in US_STOCK_MAP.items()}
 
 def resolve_ticker(input_str):
     input_str = str(input_str).strip()
-    # 1. 미국 주식 한글명 맵핑 확인
     if input_str in US_STOCK_MAP:
         return US_STOCK_MAP[input_str]
-    
-    # 2. 한국 주식 이름 확인 (삼성전자 -> 005930)
     krx_map = get_krx_code_map()
     if input_str in krx_map:
         return krx_map[input_str]
-        
     return input_str.upper()
 
 def get_current_price(ticker):
     ticker = str(ticker).strip().upper()
     try:
-        # 한국 주식 (6자리 숫자)
         if (ticker.isdigit() and len(ticker) == 6) or ticker.endswith('.KS') or ticker.endswith('.KQ'):
             code = ticker.split('.')[0]
             df = fdr.DataReader(code)
@@ -119,7 +115,6 @@ def get_current_price(ticker):
                 return df['Close'].iloc[-1]
             return 0.0
         else:
-            # 미국 주식
             ticker_obj = yf.Ticker(ticker)
             hist = ticker_obj.history(period="1d")
             if not hist.empty:
@@ -129,9 +124,7 @@ def get_current_price(ticker):
         return 0.0
 
 def get_stock_info_safe(input_str):
-    # 1. 티커 변환 (삼성전자 -> 005930)
     ticker = resolve_ticker(str(input_str))
-    
     try:
         price = get_current_price(ticker)
         if price == 0: return None
@@ -140,40 +133,30 @@ def get_stock_info_safe(input_str):
         country = '한국' if is_korean else '미국'
         currency = 'KRW' if is_korean else 'USD'
 
-        # --- [수정 핵심] 종목명 결정 로직 강화 ---
-        name = ticker  # 기본값은 티커
+        name = ticker 
         sector = '기타'
         asset_type = '기타'
 
         try:
-            # [한국 주식 이름 찾기]
             if is_korean:
                 clean_code = ticker.split('.')[0]
-                krx_map = get_krx_code_map() # {Name: Code}
-                # Code -> Name 역매핑 생성
+                krx_map = get_krx_code_map()
                 code_to_name = {v: k for k, v in krx_map.items()}
-                
                 if clean_code in code_to_name:
-                    name = code_to_name[clean_code] # 005930 -> 삼성전자
+                    name = code_to_name[clean_code]
                 else:
-                    # 맵에 없지만 사용자가 한글로 검색했다면 그 입력값 사용
                     if not input_str.isdigit() and not input_str.encode().isalpha():
                         name = input_str
-            
-            # [미국 주식 이름 찾기]
             else:
                 if ticker in TICKER_TO_KOREAN:
-                    name = TICKER_TO_KOREAN[ticker] # AAPL -> 애플
+                    name = TICKER_TO_KOREAN[ticker]
                 else:
-                    # yfinance로 정보 조회
                     info = yf.Ticker(ticker).info
                     name = info.get('shortName', ticker)
                     sector = info.get('sector', '기타')
                     asset_type = 'ETF' if info.get('quoteType') == 'ETF' else '개별주식'
-                    
         except:
-            # 오류 발생 시 사용자 입력값이 한글이면 그걸 이름으로 씀
-            if not input_str.isdigit() and not input_str.encode().isalpha():
+             if not input_str.isdigit() and not input_str.encode().isalpha():
                 name = input_str
 
         return {
@@ -224,7 +207,6 @@ def calculate_portfolio(df, usd_krw):
         current_name = str(row.get('종목명', ''))
         clean_code = ticker.split('.')[0]
         
-        # 엑셀 파일 로드 시 이름 비어있으면 채우기
         if not current_name or current_name == 'nan':
             if clean_code in code_to_name:
                 df.at[index, '종목명'] = code_to_name[clean_code]
@@ -288,6 +270,8 @@ def get_template_excel():
         df1.to_excel(writer, index=False, sheet_name='국내계좌')
         df2 = pd.DataFrame({'종목코드': ['AAPL', 'IAU', 'USD'], '종목명': ['애플', 'iShares Gold', '달러예수금'], '업종': ['IT', '원자재', '현금'], '국가': ['미국', '미국', '미국'], '수량': [5, 10, 1000], '매수단가': [150, 40, 1]})
         df2.to_excel(writer, index=False, sheet_name='미국계좌')
+        df3 = pd.DataFrame({'종목코드': ['005930'], '종목명': ['삼성전자'], '업종': ['반도체'], '국가': ['한국'], '수량': [100], '매수단가': [60000]})
+        df3.to_excel(writer, index=False, sheet_name='퇴직연금(IRP)')
     return output.getvalue()
 
 with st.expander("⬇️ 엑셀 양식 다운로드"):
@@ -299,6 +283,7 @@ with st.expander("⬇️ 엑셀 양식 다운로드"):
 uploaded_file = st.file_uploader("📂 엑셀 파일을 업로드하세요", type=['xlsx'])
 
 if uploaded_file is not None:
+    # 1. 데이터 로드 및 계산
     if st.session_state['portfolio_data'] is None:
         try:
             usd_krw = get_exchange_rate()
@@ -327,52 +312,111 @@ if uploaded_file is not None:
 
     portfolio_dict = st.session_state['portfolio_data']
     usd_krw = st.session_state['usd_krw']
-    all_df = pd.concat(portfolio_dict.values(), ignore_index=True)
+
+    # --- [추가] 사이드바: 납입원금 설정 ---
+    with st.sidebar:
+        st.header("💰 계좌별 납입원금 설정")
+        st.caption("실제 입금한 원금을 입력하면 수익률이 갱신됩니다. (미입력 시 매수총액 기준)")
+        
+        updated_principals = {}
+        for sheet_name, df in portfolio_dict.items():
+            default_val = df['매수금액'].sum()
+            # 기존 세션에 값이 있으면 그걸 쓰고, 없으면 매수금액 합계
+            current_val = st.session_state['user_principals'].get(sheet_name, default_val)
+            
+            val = st.number_input(
+                f"{sheet_name}", 
+                min_value=0.0, 
+                value=float(current_val), 
+                step=10000.0, 
+                format="%.0f",
+                key=f"input_{sheet_name}"
+            )
+            updated_principals[sheet_name] = val
+        
+        # 입력값 저장
+        st.session_state['user_principals'] = updated_principals
+
+    # --- [추가] 퇴직연금/IRP/DC 제외 로직 ---
+    # 제외할 키워드 정의
+    HIDDEN_KEYWORDS = ['퇴직연금', 'IRP', 'DC']
+    
+    # 통합 대시보드용 데이터 (숨김 계좌 제외)
+    dashboard_dfs = []
+    dashboard_total_principal = 0
+    
+    for name, df in portfolio_dict.items():
+        # 숨김 키워드가 포함되지 않은 시트만 대시보드 합산
+        if not any(k in name for k in HIDDEN_KEYWORDS):
+            dashboard_dfs.append(df)
+            dashboard_total_principal += st.session_state['user_principals'].get(name, df['매수금액'].sum())
+
+    if dashboard_dfs:
+        all_df_dashboard = pd.concat(dashboard_dfs, ignore_index=True)
+    else:
+        all_df_dashboard = pd.DataFrame() # 표시할 계좌가 없는 경우
+
+    # 전체 데이터 (원본 보기용)
+    all_df_raw = pd.concat(portfolio_dict.values(), ignore_index=True)
+
 
     tab1, tab2, tab3, tab4 = st.tabs(["📊 통합 대시보드", "📂 계좌별 상세", "🎛️ 시뮬레이션", "📝 원본 데이터"])
 
-    # --- [TAB 1] 통합 대시보드 ---
+    # --- [TAB 1] 통합 대시보드 (퇴직연금 제외됨) ---
     with tab1:
-        st.subheader("🌐 전체 자산 현황")
-        total_eval = all_df['평가금액'].sum()
-        total_buy = all_df['매수금액'].sum()
-        profit = total_eval - total_buy
-        yield_rate = (profit / total_buy * 100) if total_buy > 0 else 0
+        st.subheader("🌐 전체 자산 현황 (퇴직연금 제외)")
         
-        m1, m2, m3 = st.columns(3)
-        m1.metric("총 매수금액", f"{total_buy:,.0f} 원")
-        m2.metric("총 평가금액", f"{total_eval:,.0f} 원", f"{profit:+,.0f} 원")
-        m3.metric("총 수익률", f"{yield_rate:.2f} %", f"{yield_rate:.2f} %")
-        st.divider()
-        
-        r1_c1, r1_c2 = st.columns(2)
-        with r1_c1: st.plotly_chart(create_pie(all_df, '종목명', "1. 종목별 비중"), use_container_width=True, key='t1_c1')
-        with r1_c2: st.plotly_chart(create_pie(all_df, '업종', "2. 업종(섹터)별 비중"), use_container_width=True, key='t1_c2')
-        r2_c1, r2_c2 = st.columns(2)
-        with r2_c1: st.plotly_chart(create_pie(all_df, '국가', "3. 국가별 비중"), use_container_width=True, key='t1_c3')
-        with r2_c2: st.plotly_chart(create_pie(all_df, '유형', "4. 자산 유형별 비중"), use_container_width=True, key='t1_c4')
+        if not all_df_dashboard.empty:
+            total_eval = all_df_dashboard['평가금액'].sum()
+            # [수정] 매수금액 단순 합계가 아니라, 사용자가 입력한 납입원금 기준
+            total_principal = dashboard_total_principal
+            
+            profit = total_eval - total_principal
+            yield_rate = (profit / total_principal * 100) if total_principal > 0 else 0
+            
+            m1, m2, m3 = st.columns(3)
+            m1.metric("총 납입원금", f"{total_principal:,.0f} 원")
+            m2.metric("총 평가금액", f"{total_eval:,.0f} 원", f"{profit:+,.0f} 원")
+            m3.metric("총 수익률", f"{yield_rate:.2f} %", f"{yield_rate:.2f} %")
+            st.divider()
+            
+            r1_c1, r1_c2 = st.columns(2)
+            with r1_c1: st.plotly_chart(create_pie(all_df_dashboard, '종목명', "1. 종목별 비중"), use_container_width=True, key='t1_c1')
+            with r1_c2: st.plotly_chart(create_pie(all_df_dashboard, '업종', "2. 업종(섹터)별 비중"), use_container_width=True, key='t1_c2')
+            r2_c1, r2_c2 = st.columns(2)
+            with r2_c1: st.plotly_chart(create_pie(all_df_dashboard, '국가', "3. 국가별 비중"), use_container_width=True, key='t1_c3')
+            with r2_c2: st.plotly_chart(create_pie(all_df_dashboard, '유형', "4. 자산 유형별 비중"), use_container_width=True, key='t1_c4')
 
-        st.divider()
-        st.subheader("📋 전체 자산 상세")
-        summary_cols = ['계좌명', '종목명', '업종', '국가', '수량', '매수단가', '현재가', '수익률', '평가금액']
-        st.dataframe(
-            all_df[summary_cols].style.format({
-                '수량': '{:,.2f}', '매수단가': '{:,.0f}', '현재가': '{:,.0f}', '수익률': '{:+.2f}%', '평가금액': '{:,.0f}'
-            }).map(color_profit, subset=['수익률']),
-            use_container_width=True, hide_index=True
-        )
+            st.divider()
+            st.subheader("📋 전체 자산 상세")
+            summary_cols = ['계좌명', '종목명', '업종', '국가', '수량', '매수단가', '현재가', '수익률', '평가금액']
+            st.dataframe(
+                all_df_dashboard[summary_cols].style.format({
+                    '수량': '{:,.2f}', '매수단가': '{:,.0f}', '현재가': '{:,.0f}', '수익률': '{:+.2f}%', '평가금액': '{:,.0f}'
+                }).map(color_profit, subset=['수익률']),
+                use_container_width=True, hide_index=True
+            )
+        else:
+            st.info("통합 대시보드에 표시할 계좌가 없습니다. (모든 계좌가 숨김 처리되었거나 데이터가 없습니다.)")
 
-    # --- [TAB 2] 계좌별 상세 ---
+    # --- [TAB 2] 계좌별 상세 (퇴직연금 포함 모든 계좌 표시) ---
     with tab2:
         sheet_names = list(portfolio_dict.keys())
         selected_sheet = st.selectbox("계좌 선택:", sheet_names)
         target_df = portfolio_dict[selected_sheet]
         
-        t_eval = target_df['평가금액'].sum()
-        t_profit = t_eval - target_df['매수금액'].sum()
+        # [수정] 해당 계좌의 사용자 입력 납입원금 가져오기
+        sheet_principal = st.session_state['user_principals'].get(selected_sheet, target_df['매수금액'].sum())
         
-        m1, m2 = st.columns(2)
-        m1.metric("계좌 평가금액", f"{t_eval:,.0f} 원", f"{t_profit:+,.0f} 원")
+        t_eval = target_df['평가금액'].sum()
+        t_profit = t_eval - sheet_principal
+        # 수익률 계산 시 입력한 원금 사용
+        t_yield = (t_profit / sheet_principal * 100) if sheet_principal > 0 else 0
+        
+        m1, m2, m3 = st.columns(3)
+        m1.metric("납입 원금", f"{sheet_principal:,.0f} 원")
+        m2.metric("계좌 평가금액", f"{t_eval:,.0f} 원", f"{t_profit:+,.0f} 원")
+        m3.metric("계좌 수익률", f"{t_yield:.2f} %", f"{t_yield:.2f} %")
         st.divider()
         
         c1, c2 = st.columns(2)
@@ -501,7 +545,7 @@ if uploaded_file is not None:
 
     # --- [TAB 4] 원본 데이터 ---
     with tab4:
-        st.dataframe(all_df)
+        st.dataframe(all_df_raw)
 
 else:
     st.info("👆 엑셀 파일을 업로드해주세요.")
