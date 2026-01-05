@@ -3,7 +3,6 @@ import pandas as pd
 import yfinance as yf
 import plotly.express as px
 import io
-# [수정] timezone 처리를 위해 timedelta, timezone 추가 임포트
 from datetime import datetime, timedelta, timezone
 import FinanceDataReader as fdr
 import time
@@ -45,10 +44,10 @@ if 'user_principals' not in st.session_state:
 # 상단 헤더
 col_title, col_time = st.columns([0.7, 0.3])
 with col_title:
-    st.title("🏦 포트폴리오 매니저 v5.5")
-    st.markdown("납입금액 추가, 시간기준 한국, 퇴직연금 추가")
+    st.title("🏦 포트폴리오 매니저 v5.6")
+    st.markdown("Final Fix (엑셀 납입원금 자동 인식)")
 with col_time:
-    # [수정] 서버 시간(UTC)을 한국 시간(KST, UTC+9)으로 변환하여 표시
+    # 한국 시간(KST) 설정
     kst_timezone = timezone(timedelta(hours=9))
     now_kst = datetime.now(kst_timezone)
     now_str = now_kst.strftime("%Y-%m-%d %H:%M:%S")
@@ -266,21 +265,48 @@ def calculate_portfolio(df, usd_krw):
     return df
 
 # -----------------------------------------------------------------------------
-# 3. 엑셀 다운로드
+# 3. 엑셀 다운로드 (양식 수정: 납입원금 컬럼 추가)
 # -----------------------------------------------------------------------------
 def get_template_excel():
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df1 = pd.DataFrame({'종목코드': ['005930', 'KRW'], '종목명': ['삼성전자', '원화예수금'], '업종': ['반도체', '현금'], '국가': ['한국', '한국'], '수량': [10, 1000000], '매수단가': [70000, 1]})
+        # [수정] 납입원금 컬럼 추가 (첫 행에만 값 입력 예시)
+        df1 = pd.DataFrame({
+            '종목코드': ['005930', 'KRW'], 
+            '종목명': ['삼성전자', '원화예수금'], 
+            '업종': ['반도체', '현금'], 
+            '국가': ['한국', '한국'], 
+            '수량': [10, 1000000], 
+            '매수단가': [70000, 1],
+            '납입원금': [2000000, 0] # 예: 총 납입금 200만원
+        })
         df1.to_excel(writer, index=False, sheet_name='국내계좌')
-        df2 = pd.DataFrame({'종목코드': ['AAPL', 'IAU', 'USD'], '종목명': ['애플', 'iShares Gold', '달러예수금'], '업종': ['IT', '원자재', '현금'], '국가': ['미국', '미국', '미국'], '수량': [5, 10, 1000], '매수단가': [150, 40, 1]})
+        
+        df2 = pd.DataFrame({
+            '종목코드': ['AAPL', 'IAU', 'USD'], 
+            '종목명': ['애플', 'iShares Gold', '달러예수금'], 
+            '업종': ['IT', '원자재', '현금'], 
+            '국가': ['미국', '미국', '미국'], 
+            '수량': [5, 10, 1000], 
+            '매수단가': [150, 40, 1],
+            '납입원금': [3000, 0, 0] # 예: 총 납입금 3000달러(혹은 원화환산액)
+        })
         df2.to_excel(writer, index=False, sheet_name='미국계좌')
-        df3 = pd.DataFrame({'종목코드': ['005930'], '종목명': ['삼성전자'], '업종': ['반도체'], '국가': ['한국'], '수량': [100], '매수단가': [60000]})
+        
+        df3 = pd.DataFrame({
+            '종목코드': ['005930'], 
+            '종목명': ['삼성전자'], 
+            '업종': ['반도체'], 
+            '국가': ['한국'], 
+            '수량': [100], 
+            '매수단가': [60000],
+            '납입원금': [6000000]
+        })
         df3.to_excel(writer, index=False, sheet_name='퇴직연금(IRP)')
     return output.getvalue()
 
 with st.expander("⬇️ 엑셀 양식 다운로드"):
-    st.download_button(label="엑셀 양식 받기 (.xlsx)", data=get_template_excel(), file_name='portfolio_template_v5.xlsx')
+    st.download_button(label="엑셀 양식 받기 (.xlsx)", data=get_template_excel(), file_name='portfolio_template_v5.6.xlsx')
 
 # -----------------------------------------------------------------------------
 # 4. 메인 로직
@@ -295,11 +321,21 @@ if uploaded_file is not None:
             xls = pd.read_excel(uploaded_file, sheet_name=None)
             
             processed_data = {}
+            # [추가] 엑셀에서 읽어온 납입원금을 저장할 임시 딕셔너리
+            excel_principals = {}
+
             with st.spinner(f'데이터 갱신 중... (환율: {usd_krw:,.2f}원)'):
                 for sheet_name, df_sheet in xls.items():
                     required = ['종목코드', '종목명', '수량', '매수단가']
                     if not all(col in df_sheet.columns for col in required): continue
                     
+                    # [추가] 납입원금 컬럼 확인 및 데이터 추출
+                    if '납입원금' in df_sheet.columns:
+                        # 첫 번째 행의 값을 납입원금으로 인식 (NaN 처리)
+                        first_val = df_sheet['납입원금'].iloc[0]
+                        if pd.notna(first_val):
+                            excel_principals[sheet_name] = float(first_val)
+
                     processed_df = calculate_portfolio(df_sheet.copy(), usd_krw)
                     processed_df['계좌명'] = sheet_name
                     processed_data[sheet_name] = processed_df
@@ -311,6 +347,11 @@ if uploaded_file is not None:
             st.session_state['portfolio_data'] = processed_data
             st.session_state['usd_krw'] = usd_krw
             
+            # [추가] 엑셀에 납입원금이 있었다면 세션 상태 업데이트 (기존 값 덮어쓰기)
+            if excel_principals:
+                for k, v in excel_principals.items():
+                    st.session_state['user_principals'][k] = v
+            
         except Exception as e:
             st.error(f"오류: {e}")
             st.stop()
@@ -321,12 +362,14 @@ if uploaded_file is not None:
     # --- 사이드바: 납입원금 설정 ---
     with st.sidebar:
         st.header("💰 계좌별 납입원금 설정")
-        st.caption("실제 입금한 원금을 입력하면 수익률이 갱신됩니다. (미입력 시 매수총액 기준)")
+        st.caption("엑셀에 '납입원금' 열을 추가하면 자동 입력됩니다.")
         
         updated_principals = {}
         for sheet_name, df in portfolio_dict.items():
             default_val = df['매수금액'].sum()
-            # 기존 세션에 값이 있으면 그걸 쓰고, 없으면 매수금액 합계
+            
+            # 1순위: 이미 세션에 저장된 값 (엑셀 로드 시 업데이트됨)
+            # 2순위: 매수금액 합계
             current_val = st.session_state['user_principals'].get(sheet_name, default_val)
             
             val = st.number_input(
