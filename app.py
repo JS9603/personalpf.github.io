@@ -3,7 +3,8 @@ import pandas as pd
 import yfinance as yf
 import plotly.express as px
 import io
-from datetime import datetime
+# [수정] timezone 처리를 위해 timedelta, timezone 추가 임포트
+from datetime import datetime, timedelta, timezone
 import FinanceDataReader as fdr
 import time
 from streamlit_autorefresh import st_autorefresh
@@ -37,7 +38,7 @@ if 'sim_target_sheet' not in st.session_state:
 if 'sim_df' not in st.session_state:
     st.session_state['sim_df'] = None
 
-# [추가] 납입원금 저장을 위한 세션
+# 납입원금 저장을 위한 세션
 if 'user_principals' not in st.session_state:
     st.session_state['user_principals'] = {}
 
@@ -45,11 +46,15 @@ if 'user_principals' not in st.session_state:
 col_title, col_time = st.columns([0.7, 0.3])
 with col_title:
     st.title("🏦 포트폴리오 매니저 v5.5")
-    st.markdown("퇴직연금 관리기능 추가, 납입금액 기능추가")
+    st.markdown("납입금액 추가, 시간기준 한국, 퇴직연금 추가")
 with col_time:
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # [수정] 서버 시간(UTC)을 한국 시간(KST, UTC+9)으로 변환하여 표시
+    kst_timezone = timezone(timedelta(hours=9))
+    now_kst = datetime.now(kst_timezone)
+    now_str = now_kst.strftime("%Y-%m-%d %H:%M:%S")
+    
     st.write("") 
-    st.caption(f"🕒 최종 갱신: {now_str}")
+    st.caption(f"🕒 최종 갱신(KST): {now_str}")
     if st.button("🔄 즉시 갱신"):
         st.session_state['portfolio_data'] = None
         st.rerun()
@@ -313,7 +318,7 @@ if uploaded_file is not None:
     portfolio_dict = st.session_state['portfolio_data']
     usd_krw = st.session_state['usd_krw']
 
-    # --- [추가] 사이드바: 납입원금 설정 ---
+    # --- 사이드바: 납입원금 설정 ---
     with st.sidebar:
         st.header("💰 계좌별 납입원금 설정")
         st.caption("실제 입금한 원금을 입력하면 수익률이 갱신됩니다. (미입력 시 매수총액 기준)")
@@ -337,16 +342,13 @@ if uploaded_file is not None:
         # 입력값 저장
         st.session_state['user_principals'] = updated_principals
 
-    # --- [추가] 퇴직연금/IRP/DC 제외 로직 ---
-    # 제외할 키워드 정의
+    # --- 퇴직연금/IRP/DC 제외 로직 ---
     HIDDEN_KEYWORDS = ['퇴직연금', 'IRP', 'DC']
     
-    # 통합 대시보드용 데이터 (숨김 계좌 제외)
     dashboard_dfs = []
     dashboard_total_principal = 0
     
     for name, df in portfolio_dict.items():
-        # 숨김 키워드가 포함되지 않은 시트만 대시보드 합산
         if not any(k in name for k in HIDDEN_KEYWORDS):
             dashboard_dfs.append(df)
             dashboard_total_principal += st.session_state['user_principals'].get(name, df['매수금액'].sum())
@@ -354,9 +356,8 @@ if uploaded_file is not None:
     if dashboard_dfs:
         all_df_dashboard = pd.concat(dashboard_dfs, ignore_index=True)
     else:
-        all_df_dashboard = pd.DataFrame() # 표시할 계좌가 없는 경우
+        all_df_dashboard = pd.DataFrame() 
 
-    # 전체 데이터 (원본 보기용)
     all_df_raw = pd.concat(portfolio_dict.values(), ignore_index=True)
 
 
@@ -368,7 +369,6 @@ if uploaded_file is not None:
         
         if not all_df_dashboard.empty:
             total_eval = all_df_dashboard['평가금액'].sum()
-            # [수정] 매수금액 단순 합계가 아니라, 사용자가 입력한 납입원금 기준
             total_principal = dashboard_total_principal
             
             profit = total_eval - total_principal
@@ -399,18 +399,16 @@ if uploaded_file is not None:
         else:
             st.info("통합 대시보드에 표시할 계좌가 없습니다. (모든 계좌가 숨김 처리되었거나 데이터가 없습니다.)")
 
-    # --- [TAB 2] 계좌별 상세 (퇴직연금 포함 모든 계좌 표시) ---
+    # --- [TAB 2] 계좌별 상세 ---
     with tab2:
         sheet_names = list(portfolio_dict.keys())
         selected_sheet = st.selectbox("계좌 선택:", sheet_names)
         target_df = portfolio_dict[selected_sheet]
         
-        # [수정] 해당 계좌의 사용자 입력 납입원금 가져오기
         sheet_principal = st.session_state['user_principals'].get(selected_sheet, target_df['매수금액'].sum())
         
         t_eval = target_df['평가금액'].sum()
         t_profit = t_eval - sheet_principal
-        # 수익률 계산 시 입력한 원금 사용
         t_yield = (t_profit / sheet_principal * 100) if sheet_principal > 0 else 0
         
         m1, m2, m3 = st.columns(3)
