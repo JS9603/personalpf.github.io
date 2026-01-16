@@ -44,8 +44,8 @@ if 'user_principals' not in st.session_state:
 # 상단 헤더
 col_title, col_time = st.columns([0.7, 0.3])
 with col_title:
-    st.title("🏦 포트폴리오 매니저 v5.8")
-    st.markdown("종목코드 업데이트")
+    st.title("🏦 포트폴리오 매니저 v5.9")
+    st.markdown("Final Fix (KRX 금현물 데이터 연동 강화)")
 with col_time:
     # 한국 시간(KST) 설정
     kst_timezone = timezone(timedelta(hours=9))
@@ -88,7 +88,7 @@ def get_krx_code_map():
     except:
         return {}
 
-# TIGER KRX금현물(0072R0) 등 특수 종목 추가
+# TIGER KRX금현물(0072R0) 등 특수 종목 매핑
 CUSTOM_STOCK_MAP = {
     '애플': 'AAPL', '마이크로소프트': 'MSFT', '테슬라': 'TSLA', '엔비디아': 'NVDA',
     '구글': 'GOOGL', '아마존': 'AMZN', '메타': 'META', '넷플릭스': 'NFLX',
@@ -98,7 +98,7 @@ CUSTOM_STOCK_MAP = {
     '리얼티인컴': 'O', '아이온큐': 'IONQ', '팔란티어': 'PLTR',
     'IAU': 'IAU', '금': 'IAU', '골드': 'IAU', 'GLD': 'GLD',
     # 국내 특수 종목 추가
-    'TIGER KRX금현물': '0072R0', '금현물': '0072R0', 'KRX금': '0072R0'
+    'TIGER KRX금현물': '0072R0', '금현물': '0072R0', 'KRX금': '0072R0', '한국금현물': '0072R0'
 }
 
 TICKER_TO_KOREAN = {v: k for k, v in CUSTOM_STOCK_MAP.items()}
@@ -117,32 +117,45 @@ def is_korean_stock(ticker):
     한국 주식 판별 로직
     """
     ticker = str(ticker).strip().upper()
-    
-    # 1. .KS / .KQ로 끝나면 한국 주식
     if ticker.endswith('.KS') or ticker.endswith('.KQ'):
         return True
-    
-    # 2. 6글자이고, 첫 글자가 숫자면 한국 주식으로 간주 (005930, 0072R0)
+    # 숫자 6자리거나, 6자리면서 첫글자가 숫자(0072R0 등)
     if len(ticker) == 6 and ticker[0].isdigit():
         return True
-        
     return False
 
 def get_current_price(ticker):
     ticker = str(ticker).strip().upper()
+    
+    # [수정] 가격 조회 로직 강화 (금현물 0원 방지)
     try:
+        # 1. 한국 주식으로 식별된 경우
         if is_korean_stock(ticker):
-            code = ticker.split('.')[0]
-            df = fdr.DataReader(code)
-            if not df.empty:
-                return df['Close'].iloc[-1]
-            return 0.0
-        else:
-            ticker_obj = yf.Ticker(ticker)
-            hist = ticker_obj.history(period="1d")
-            if not hist.empty:
-                return hist['Close'].iloc[-1]
-            return 0.0
+            clean_code = ticker.split('.')[0]
+            
+            # 시도 A: FinanceDataReader (일반 주식)
+            try:
+                df = fdr.DataReader(clean_code)
+                if not df.empty:
+                    return df['Close'].iloc[-1]
+            except: pass
+            
+            # 시도 B: yfinance에 .KS 붙여서 시도 (금현물 등 특수종목)
+            # 예: 0072R0 -> 0072R0.KS
+            try:
+                yf_ticker = f"{clean_code}.KS"
+                hist = yf.Ticker(yf_ticker).history(period="1d")
+                if not hist.empty:
+                    return hist['Close'].iloc[-1]
+            except: pass
+
+        # 2. 미국 주식이거나, 위에서 실패한 경우 yfinance 원본 시도
+        ticker_obj = yf.Ticker(ticker)
+        hist = ticker_obj.history(period="1d")
+        if not hist.empty:
+            return hist['Close'].iloc[-1]
+            
+        return 0.0
     except:
         return 0.0
 
@@ -150,6 +163,7 @@ def get_stock_info_safe(input_str):
     ticker = resolve_ticker(str(input_str))
     try:
         price = get_current_price(ticker)
+        # 가격을 못 가져오면 None 리턴 (이래서 검색이 안 됐던 것임)
         if price == 0: return None
         
         is_korean = is_korean_stock(ticker)
@@ -259,18 +273,14 @@ def calculate_portfolio(df, usd_krw):
         else:
             price = get_current_price(ticker)
             
-            # [오류 수정 핵심] 한국 주식이면 미국 주식이 아님(not)으로 설정해야 함
-            # v5.7 버그: is_us_stock = ... or (is_korean_stock(ticker))  <-- 틀림
-            # v5.8 수정: is_us_stock = ... or (not is_korean_stock(ticker)) <-- 맞음
+            # [오류 수정] 238억 뻥튀기 방지 로직 (한국 주식은 환율 곱하지 않음)
             is_kr_stock = (country == '한국') or is_korean_stock(ticker)
             
             if is_kr_stock:
-                # 한국 주식: 원화 그대로 계산
                 eval_val = price * qty
                 buy_val = avg_price * qty
                 currency = 'KRW'
             else:
-                # 미국 주식: 환율 적용
                 eval_val = price * qty * usd_krw
                 buy_val = avg_price * qty * usd_krw
                 currency = 'USD'
@@ -293,7 +303,7 @@ def calculate_portfolio(df, usd_krw):
     return df
 
 # -----------------------------------------------------------------------------
-# 3. 엑셀 다운로드 (오류 수정: 납입원금 리스트 개수 맞춤)
+# 3. 엑셀 다운로드
 # -----------------------------------------------------------------------------
 def get_template_excel():
     output = io.BytesIO()
@@ -320,7 +330,6 @@ def get_template_excel():
         })
         df2.to_excel(writer, index=False, sheet_name='미국계좌')
         
-        # [수정] 데이터 길이 불일치 오류 해결 (납입원금 리스트에 0 추가)
         df3 = pd.DataFrame({
             '종목코드': ['005930', '0072R0'], 
             '종목명': ['삼성전자', 'TIGER KRX금현물'], 
@@ -334,7 +343,7 @@ def get_template_excel():
     return output.getvalue()
 
 with st.expander("⬇️ 엑셀 양식 다운로드"):
-    st.download_button(label="엑셀 양식 받기 (.xlsx)", data=get_template_excel(), file_name='portfolio_template_v5.8.xlsx')
+    st.download_button(label="엑셀 양식 받기 (.xlsx)", data=get_template_excel(), file_name='portfolio_template_v5.9.xlsx')
 
 # -----------------------------------------------------------------------------
 # 4. 메인 로직
