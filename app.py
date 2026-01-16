@@ -44,8 +44,8 @@ if 'user_principals' not in st.session_state:
 # 상단 헤더
 col_title, col_time = st.columns([0.7, 0.3])
 with col_title:
-    st.title("🏦 포트폴리오 매니저 v5.9")
-    st.markdown("Final Fix (KRX 금현물 데이터 연동 강화)")
+    st.title("🏦 포트폴리오 매니저 v6.0")
+    st.markdown("최적화 패치")
 with col_time:
     # 한국 시간(KST) 설정
     kst_timezone = timezone(timedelta(hours=9))
@@ -127,21 +127,19 @@ def is_korean_stock(ticker):
 def get_current_price(ticker):
     ticker = str(ticker).strip().upper()
     
-    # [수정] 가격 조회 로직 강화 (금현물 0원 방지)
     try:
         # 1. 한국 주식으로 식별된 경우
         if is_korean_stock(ticker):
             clean_code = ticker.split('.')[0]
             
-            # 시도 A: FinanceDataReader (일반 주식)
+            # 시도 A: FinanceDataReader
             try:
                 df = fdr.DataReader(clean_code)
                 if not df.empty:
                     return df['Close'].iloc[-1]
             except: pass
             
-            # 시도 B: yfinance에 .KS 붙여서 시도 (금현물 등 특수종목)
-            # 예: 0072R0 -> 0072R0.KS
+            # 시도 B: yfinance에 .KS 붙여서 시도
             try:
                 yf_ticker = f"{clean_code}.KS"
                 hist = yf.Ticker(yf_ticker).history(period="1d")
@@ -163,7 +161,6 @@ def get_stock_info_safe(input_str):
     ticker = resolve_ticker(str(input_str))
     try:
         price = get_current_price(ticker)
-        # 가격을 못 가져오면 None 리턴 (이래서 검색이 안 됐던 것임)
         if price == 0: return None
         
         is_korean = is_korean_stock(ticker)
@@ -273,7 +270,6 @@ def calculate_portfolio(df, usd_krw):
         else:
             price = get_current_price(ticker)
             
-            # [오류 수정] 238억 뻥튀기 방지 로직 (한국 주식은 환율 곱하지 않음)
             is_kr_stock = (country == '한국') or is_korean_stock(ticker)
             
             if is_kr_stock:
@@ -343,7 +339,7 @@ def get_template_excel():
     return output.getvalue()
 
 with st.expander("⬇️ 엑셀 양식 다운로드"):
-    st.download_button(label="엑셀 양식 받기 (.xlsx)", data=get_template_excel(), file_name='portfolio_template_v5.9.xlsx')
+    st.download_button(label="엑셀 양식 받기 (.xlsx)", data=get_template_excel(), file_name='portfolio_template_v6.0.xlsx')
 
 # -----------------------------------------------------------------------------
 # 4. 메인 로직
@@ -470,7 +466,7 @@ if uploaded_file is not None:
         else:
             st.info("통합 대시보드에 표시할 계좌가 없습니다. (모든 계좌가 숨김 처리되었거나 데이터가 없습니다.)")
 
-    # --- [TAB 2] 계좌별 상세 ---
+    # --- [TAB 2] 계좌별 상세 (업종 차트 추가됨) ---
     with tab2:
         sheet_names = list(portfolio_dict.keys())
         selected_sheet = st.selectbox("계좌 선택:", sheet_names)
@@ -488,9 +484,11 @@ if uploaded_file is not None:
         m3.metric("계좌 수익률", f"{t_yield:.2f} %", f"{t_yield:.2f} %")
         st.divider()
         
-        c1, c2 = st.columns(2)
+        # [수정] 3개 컬럼으로 분할하여 업종 차트 추가
+        c1, c2, c3 = st.columns(3)
         with c1: st.plotly_chart(create_pie(target_df, '종목명', "1. 종목 비중"), use_container_width=True, key='t2_c1')
-        with c2: st.plotly_chart(create_pie(target_df, '유형', "2. 유형 비중"), use_container_width=True, key='t2_c2')
+        with c2: st.plotly_chart(create_pie(target_df, '업종', "2. 업종(섹터) 비중"), use_container_width=True, key='t2_c2_new')
+        with c3: st.plotly_chart(create_pie(target_df, '유형', "3. 유형 비중"), use_container_width=True, key='t2_c3')
         
         st.caption(f"📋 {selected_sheet} 보유 종목")
         st.dataframe(
