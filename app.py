@@ -44,8 +44,8 @@ if 'user_principals' not in st.session_state:
 # 상단 헤더
 col_title, col_time = st.columns([0.7, 0.3])
 with col_title:
-    st.title("🏦 포트폴리오 매니저 v5.7")
-    st.markdown("금현물 검색가능")
+    st.title("🏦 포트폴리오 매니저 v5.7.1")
+    st.markdown("종목코드 업데이트")
 with col_time:
     # 한국 시간(KST) 설정
     kst_timezone = timezone(timedelta(hours=9))
@@ -88,7 +88,7 @@ def get_krx_code_map():
     except:
         return {}
 
-# [수정] TIGER KRX금현물(0072R0) 등 특수 종목 추가
+# TIGER KRX금현물(0072R0) 등 특수 종목 추가
 CUSTOM_STOCK_MAP = {
     '애플': 'AAPL', '마이크로소프트': 'MSFT', '테슬라': 'TSLA', '엔비디아': 'NVDA',
     '구글': 'GOOGL', '아마존': 'AMZN', '메타': 'META', '넷플릭스': 'NFLX',
@@ -114,7 +114,7 @@ def resolve_ticker(input_str):
 
 def is_korean_stock(ticker):
     """
-    [수정] 한국 주식 판별 로직 강화
+    한국 주식 판별 로직 강화
     기존: 숫자 6자리만 허용 (005930)
     변경: 숫자 6자리 OR (6자리이면서 첫 글자가 숫자) -> 0072R0 허용
     """
@@ -290,7 +290,7 @@ def calculate_portfolio(df, usd_krw):
     return df
 
 # -----------------------------------------------------------------------------
-# 3. 엑셀 다운로드
+# 3. 엑셀 다운로드 (오류 수정: 납입원금 리스트 개수 맞춤)
 # -----------------------------------------------------------------------------
 def get_template_excel():
     output = io.BytesIO()
@@ -317,6 +317,7 @@ def get_template_excel():
         })
         df2.to_excel(writer, index=False, sheet_name='미국계좌')
         
+        # [수정] 납입원금 리스트 길이를 종목코드 길이(2개)와 맞춤: [6000000] -> [6000000, 0]
         df3 = pd.DataFrame({
             '종목코드': ['005930', '0072R0'], 
             '종목명': ['삼성전자', 'TIGER KRX금현물'], 
@@ -324,13 +325,13 @@ def get_template_excel():
             '국가': ['한국', '한국'], 
             '수량': [100, 50], 
             '매수단가': [60000, 12000],
-            '납입원금': [6000000]
+            '납입원금': [6000000, 0] 
         })
         df3.to_excel(writer, index=False, sheet_name='퇴직연금(IRP)')
     return output.getvalue()
 
 with st.expander("⬇️ 엑셀 양식 다운로드"):
-    st.download_button(label="엑셀 양식 받기 (.xlsx)", data=get_template_excel(), file_name='portfolio_template_v5.7.xlsx')
+    st.download_button(label="엑셀 양식 받기 (.xlsx)", data=get_template_excel(), file_name='portfolio_template_v5.7.1.xlsx')
 
 # -----------------------------------------------------------------------------
 # 4. 메인 로직
