@@ -44,7 +44,7 @@ if 'user_principals' not in st.session_state:
 # 상단 헤더
 col_title, col_time = st.columns([0.7, 0.3])
 with col_title:
-    st.title("🏦 포트폴리오 매니저 v5.7.1")
+    st.title("🏦 포트폴리오 매니저 v5.8")
     st.markdown("종목코드 업데이트")
 with col_time:
     # 한국 시간(KST) 설정
@@ -114,9 +114,7 @@ def resolve_ticker(input_str):
 
 def is_korean_stock(ticker):
     """
-    한국 주식 판별 로직 강화
-    기존: 숫자 6자리만 허용 (005930)
-    변경: 숫자 6자리 OR (6자리이면서 첫 글자가 숫자) -> 0072R0 허용
+    한국 주식 판별 로직
     """
     ticker = str(ticker).strip().upper()
     
@@ -124,8 +122,7 @@ def is_korean_stock(ticker):
     if ticker.endswith('.KS') or ticker.endswith('.KQ'):
         return True
     
-    # 2. 6글자이고, 첫 글자가 숫자면 한국 주식으로 간주 (미국 티커는 숫자로 시작 안 함)
-    # 예: 005930 (삼성전자), 0072R0 (금현물)
+    # 2. 6글자이고, 첫 글자가 숫자면 한국 주식으로 간주 (005930, 0072R0)
     if len(ticker) == 6 and ticker[0].isdigit():
         return True
         
@@ -261,16 +258,22 @@ def calculate_portfolio(df, usd_krw):
             currency = 'USD'
         else:
             price = get_current_price(ticker)
-            is_us_stock = country == '미국' or ticker == 'USD' or (is_korean_stock(ticker))
             
-            if is_us_stock:
-                eval_val = price * qty * usd_krw
-                buy_val = avg_price * qty * usd_krw
-                currency = 'USD'
-            else:
+            # [오류 수정 핵심] 한국 주식이면 미국 주식이 아님(not)으로 설정해야 함
+            # v5.7 버그: is_us_stock = ... or (is_korean_stock(ticker))  <-- 틀림
+            # v5.8 수정: is_us_stock = ... or (not is_korean_stock(ticker)) <-- 맞음
+            is_kr_stock = (country == '한국') or is_korean_stock(ticker)
+            
+            if is_kr_stock:
+                # 한국 주식: 원화 그대로 계산
                 eval_val = price * qty
                 buy_val = avg_price * qty
                 currency = 'KRW'
+            else:
+                # 미국 주식: 환율 적용
+                eval_val = price * qty * usd_krw
+                buy_val = avg_price * qty * usd_krw
+                currency = 'USD'
         
         current_prices.append(price)
         eval_values.append(eval_val)
@@ -317,7 +320,7 @@ def get_template_excel():
         })
         df2.to_excel(writer, index=False, sheet_name='미국계좌')
         
-        # [수정] 납입원금 리스트 길이를 종목코드 길이(2개)와 맞춤: [6000000] -> [6000000, 0]
+        # [수정] 데이터 길이 불일치 오류 해결 (납입원금 리스트에 0 추가)
         df3 = pd.DataFrame({
             '종목코드': ['005930', '0072R0'], 
             '종목명': ['삼성전자', 'TIGER KRX금현물'], 
@@ -331,7 +334,7 @@ def get_template_excel():
     return output.getvalue()
 
 with st.expander("⬇️ 엑셀 양식 다운로드"):
-    st.download_button(label="엑셀 양식 받기 (.xlsx)", data=get_template_excel(), file_name='portfolio_template_v5.7.1.xlsx')
+    st.download_button(label="엑셀 양식 받기 (.xlsx)", data=get_template_excel(), file_name='portfolio_template_v5.8.xlsx')
 
 # -----------------------------------------------------------------------------
 # 4. 메인 로직
