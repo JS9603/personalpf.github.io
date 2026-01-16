@@ -44,8 +44,8 @@ if 'user_principals' not in st.session_state:
 # 상단 헤더
 col_title, col_time = st.columns([0.7, 0.3])
 with col_title:
-    st.title("🏦 포트폴리오 매니저 v5.6")
-    st.markdown("Final Fix (엑셀 납입원금 자동 인식)")
+    st.title("🏦 포트폴리오 매니저 v5.7")
+    st.markdown("금현물 검색가능")
 with col_time:
     # 한국 시간(KST) 설정
     kst_timezone = timezone(timedelta(hours=9))
@@ -88,31 +88,53 @@ def get_krx_code_map():
     except:
         return {}
 
-US_STOCK_MAP = {
+# [수정] TIGER KRX금현물(0072R0) 등 특수 종목 추가
+CUSTOM_STOCK_MAP = {
     '애플': 'AAPL', '마이크로소프트': 'MSFT', '테슬라': 'TSLA', '엔비디아': 'NVDA',
     '구글': 'GOOGL', '아마존': 'AMZN', '메타': 'META', '넷플릭스': 'NFLX',
     'AMD': 'AMD', '인텔': 'INTC', '퀄컴': 'QCOM', '브로드컴': 'AVGO',
     'SPY': 'SPY', 'QQQ': 'QQQ', 'SPLG': 'SPLG', 'SCHD': 'SCHD', 
     'JEPI': 'JEPI', 'TLT': 'TLT', 'SOXL': 'SOXL', 'TQQQ': 'TQQQ',
     '리얼티인컴': 'O', '아이온큐': 'IONQ', '팔란티어': 'PLTR',
-    'IAU': 'IAU', '금': 'IAU', '골드': 'IAU', 'GLD': 'GLD' 
+    'IAU': 'IAU', '금': 'IAU', '골드': 'IAU', 'GLD': 'GLD',
+    # 국내 특수 종목 추가
+    'TIGER KRX금현물': '0072R0', '금현물': '0072R0', 'KRX금': '0072R0'
 }
 
-TICKER_TO_KOREAN = {v: k for k, v in US_STOCK_MAP.items()}
+TICKER_TO_KOREAN = {v: k for k, v in CUSTOM_STOCK_MAP.items()}
 
 def resolve_ticker(input_str):
     input_str = str(input_str).strip()
-    if input_str in US_STOCK_MAP:
-        return US_STOCK_MAP[input_str]
+    if input_str in CUSTOM_STOCK_MAP:
+        return CUSTOM_STOCK_MAP[input_str]
     krx_map = get_krx_code_map()
     if input_str in krx_map:
         return krx_map[input_str]
     return input_str.upper()
 
+def is_korean_stock(ticker):
+    """
+    [수정] 한국 주식 판별 로직 강화
+    기존: 숫자 6자리만 허용 (005930)
+    변경: 숫자 6자리 OR (6자리이면서 첫 글자가 숫자) -> 0072R0 허용
+    """
+    ticker = str(ticker).strip().upper()
+    
+    # 1. .KS / .KQ로 끝나면 한국 주식
+    if ticker.endswith('.KS') or ticker.endswith('.KQ'):
+        return True
+    
+    # 2. 6글자이고, 첫 글자가 숫자면 한국 주식으로 간주 (미국 티커는 숫자로 시작 안 함)
+    # 예: 005930 (삼성전자), 0072R0 (금현물)
+    if len(ticker) == 6 and ticker[0].isdigit():
+        return True
+        
+    return False
+
 def get_current_price(ticker):
     ticker = str(ticker).strip().upper()
     try:
-        if (ticker.isdigit() and len(ticker) == 6) or ticker.endswith('.KS') or ticker.endswith('.KQ'):
+        if is_korean_stock(ticker):
             code = ticker.split('.')[0]
             df = fdr.DataReader(code)
             if not df.empty:
@@ -133,7 +155,7 @@ def get_stock_info_safe(input_str):
         price = get_current_price(ticker)
         if price == 0: return None
         
-        is_korean = (ticker.isdigit() and len(ticker) == 6) or ticker.endswith('.KS') or ticker.endswith('.KQ')
+        is_korean = is_korean_stock(ticker)
         country = '한국' if is_korean else '미국'
         currency = 'KRW' if is_korean else 'USD'
 
@@ -146,8 +168,11 @@ def get_stock_info_safe(input_str):
                 clean_code = ticker.split('.')[0]
                 krx_map = get_krx_code_map()
                 code_to_name = {v: k for k, v in krx_map.items()}
+                
                 if clean_code in code_to_name:
                     name = code_to_name[clean_code]
+                elif ticker in TICKER_TO_KOREAN:
+                    name = TICKER_TO_KOREAN[ticker]
                 else:
                     if not input_str.isdigit() and not input_str.encode().isalpha():
                         name = input_str
@@ -179,7 +204,7 @@ def classify_asset_type(row):
     name = str(row.get('종목명', '')).upper()
     ticker = str(row.get('종목코드', '')).upper()
     if ticker in ['KRW', 'USD'] or '예수금' in name: return '현금'
-    etf_keywords = ['ETF', 'ETN', 'KODEX', 'TIGER', 'ACE', 'SOL', 'SPLG', 'IAU', 'QQQ', 'SPY', 'TLT', 'JEPI', 'SCHD', 'SOXL', 'TQQQ', 'GLD']
+    etf_keywords = ['ETF', 'ETN', 'KODEX', 'TIGER', 'ACE', 'SOL', 'SPLG', 'IAU', 'QQQ', 'SPY', 'TLT', 'JEPI', 'SCHD', 'SOXL', 'TQQQ', 'GLD', '금현물']
     if any(k in name for k in etf_keywords) or any(k in ticker for k in etf_keywords): return 'ETF'
     return '개별주식'
 
@@ -236,7 +261,7 @@ def calculate_portfolio(df, usd_krw):
             currency = 'USD'
         else:
             price = get_current_price(ticker)
-            is_us_stock = country == '미국' or ticker == 'USD' or (not ticker.endswith('.KS') and not ticker.isdigit() and not ticker.endswith('.KQ'))
+            is_us_stock = country == '미국' or ticker == 'USD' or (is_korean_stock(ticker))
             
             if is_us_stock:
                 eval_val = price * qty * usd_krw
@@ -265,12 +290,11 @@ def calculate_portfolio(df, usd_krw):
     return df
 
 # -----------------------------------------------------------------------------
-# 3. 엑셀 다운로드 (양식 수정: 납입원금 컬럼 추가)
+# 3. 엑셀 다운로드
 # -----------------------------------------------------------------------------
 def get_template_excel():
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        # [수정] 납입원금 컬럼 추가 (첫 행에만 값 입력 예시)
         df1 = pd.DataFrame({
             '종목코드': ['005930', 'KRW'], 
             '종목명': ['삼성전자', '원화예수금'], 
@@ -278,7 +302,7 @@ def get_template_excel():
             '국가': ['한국', '한국'], 
             '수량': [10, 1000000], 
             '매수단가': [70000, 1],
-            '납입원금': [2000000, 0] # 예: 총 납입금 200만원
+            '납입원금': [2000000, 0]
         })
         df1.to_excel(writer, index=False, sheet_name='국내계좌')
         
@@ -289,24 +313,24 @@ def get_template_excel():
             '국가': ['미국', '미국', '미국'], 
             '수량': [5, 10, 1000], 
             '매수단가': [150, 40, 1],
-            '납입원금': [3000, 0, 0] # 예: 총 납입금 3000달러(혹은 원화환산액)
+            '납입원금': [3000, 0, 0]
         })
         df2.to_excel(writer, index=False, sheet_name='미국계좌')
         
         df3 = pd.DataFrame({
-            '종목코드': ['005930'], 
-            '종목명': ['삼성전자'], 
-            '업종': ['반도체'], 
-            '국가': ['한국'], 
-            '수량': [100], 
-            '매수단가': [60000],
+            '종목코드': ['005930', '0072R0'], 
+            '종목명': ['삼성전자', 'TIGER KRX금현물'], 
+            '업종': ['반도체', '원자재'], 
+            '국가': ['한국', '한국'], 
+            '수량': [100, 50], 
+            '매수단가': [60000, 12000],
             '납입원금': [6000000]
         })
         df3.to_excel(writer, index=False, sheet_name='퇴직연금(IRP)')
     return output.getvalue()
 
 with st.expander("⬇️ 엑셀 양식 다운로드"):
-    st.download_button(label="엑셀 양식 받기 (.xlsx)", data=get_template_excel(), file_name='portfolio_template_v5.6.xlsx')
+    st.download_button(label="엑셀 양식 받기 (.xlsx)", data=get_template_excel(), file_name='portfolio_template_v5.7.xlsx')
 
 # -----------------------------------------------------------------------------
 # 4. 메인 로직
@@ -314,14 +338,12 @@ with st.expander("⬇️ 엑셀 양식 다운로드"):
 uploaded_file = st.file_uploader("📂 엑셀 파일을 업로드하세요", type=['xlsx'])
 
 if uploaded_file is not None:
-    # 1. 데이터 로드 및 계산
     if st.session_state['portfolio_data'] is None:
         try:
             usd_krw = get_exchange_rate()
             xls = pd.read_excel(uploaded_file, sheet_name=None)
             
             processed_data = {}
-            # [추가] 엑셀에서 읽어온 납입원금을 저장할 임시 딕셔너리
             excel_principals = {}
 
             with st.spinner(f'데이터 갱신 중... (환율: {usd_krw:,.2f}원)'):
@@ -329,9 +351,7 @@ if uploaded_file is not None:
                     required = ['종목코드', '종목명', '수량', '매수단가']
                     if not all(col in df_sheet.columns for col in required): continue
                     
-                    # [추가] 납입원금 컬럼 확인 및 데이터 추출
                     if '납입원금' in df_sheet.columns:
-                        # 첫 번째 행의 값을 납입원금으로 인식 (NaN 처리)
                         first_val = df_sheet['납입원금'].iloc[0]
                         if pd.notna(first_val):
                             excel_principals[sheet_name] = float(first_val)
@@ -347,7 +367,6 @@ if uploaded_file is not None:
             st.session_state['portfolio_data'] = processed_data
             st.session_state['usd_krw'] = usd_krw
             
-            # [추가] 엑셀에 납입원금이 있었다면 세션 상태 업데이트 (기존 값 덮어쓰기)
             if excel_principals:
                 for k, v in excel_principals.items():
                     st.session_state['user_principals'][k] = v
@@ -367,9 +386,6 @@ if uploaded_file is not None:
         updated_principals = {}
         for sheet_name, df in portfolio_dict.items():
             default_val = df['매수금액'].sum()
-            
-            # 1순위: 이미 세션에 저장된 값 (엑셀 로드 시 업데이트됨)
-            # 2순위: 매수금액 합계
             current_val = st.session_state['user_principals'].get(sheet_name, default_val)
             
             val = st.number_input(
@@ -382,7 +398,6 @@ if uploaded_file is not None:
             )
             updated_principals[sheet_name] = val
         
-        # 입력값 저장
         st.session_state['user_principals'] = updated_principals
 
     # --- 퇴직연금/IRP/DC 제외 로직 ---
