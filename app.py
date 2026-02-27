@@ -52,8 +52,8 @@ if 'uploaded_filename' not in st.session_state:
 # 상단 헤더
 col_title, col_time = st.columns([0.7, 0.3])
 with col_title:
-    st.title("🏦 포트폴리오 매니저 v6.3")
-    st.markdown("Final Fix (시뮬레이션 안정화)")
+    st.title("🏦 포트폴리오 매니저 v6.4")
+    st.markdown("Final Fix (시뮬레이션 검색 안정화)")
 with col_time:
     # 한국 시간(KST) 설정
     kst_timezone = timezone(timedelta(hours=9))
@@ -87,32 +87,35 @@ def get_all_exchange_rates():
     except: pass
     return rates
 
-@st.cache_data(ttl=3600*24)
-def get_krx_code_map():
-    """
-    [수정] 일반 주식뿐만 아니라 국내 ETF 전체 목록도 함께 로드하여 딕셔너리로 병합
-    """
+# [수정] 캐시 오류 방지를 위해 함수명 변경 및 다중 백업 로직 적용
+@st.cache_data(ttl=3600*12)
+def get_korean_market_map():
     name_to_code = {}
     
-    # 1. 국내 일반 주식 (KOSPI, KOSDAQ 등)
+    # 1. 국내 일반 주식 (KOSPI, KOSDAQ)
     try:
         df_stock = fdr.StockListing('KRX')
+        code_col = 'Code' if 'Code' in df_stock.columns else 'Symbol'
         for _, row in df_stock.iterrows():
-            name = str(row['Name']).strip()
-            code = str(row['Code']).strip()
-            name_to_code[name] = code
+            name_to_code[str(row['Name']).strip()] = str(row[code_col]).strip()
     except:
-        pass
-        
-    # 2. 국내 ETF 종목 (KODEX, TIGER, KBSTAR 등) 추가
+        try:
+            # KRX 통합 로드 실패 시 KOSPI, KOSDAQ 개별 로드 백업 (에러 완벽 방지)
+            df_kospi = fdr.StockListing('KOSPI')
+            df_kosdaq = fdr.StockListing('KOSDAQ')
+            df_stock = pd.concat([df_kospi, df_kosdaq])
+            code_col = 'Code' if 'Code' in df_stock.columns else 'Symbol'
+            for _, row in df_stock.iterrows():
+                name_to_code[str(row['Name']).strip()] = str(row[code_col]).strip()
+        except:
+            pass
+            
+    # 2. 국내 ETF 종목 추가
     try:
         df_etf = fdr.StockListing('ETF/KR')
+        code_col = 'Symbol' if 'Symbol' in df_etf.columns else 'Code'
         for _, row in df_etf.iterrows():
-            name = str(row['Name']).strip()
-            # ETF는 Symbol이라는 컬럼명을 사용하는 경우가 많음
-            code_col = 'Symbol' if 'Symbol' in df_etf.columns else 'Code'
-            code = str(row[code_col]).strip()
-            name_to_code[name] = code
+            name_to_code[str(row['Name']).strip()] = str(row[code_col]).strip()
     except:
         pass
         
@@ -136,7 +139,7 @@ def resolve_ticker(input_str):
     input_str = str(input_str).strip()
     if input_str in CUSTOM_STOCK_MAP:
         return CUSTOM_STOCK_MAP[input_str]
-    krx_map = get_krx_code_map()
+    krx_map = get_korean_market_map()
     if input_str in krx_map:
         return krx_map[input_str]
     return input_str.upper()
@@ -163,9 +166,17 @@ def get_current_price(ticker):
                     return df['Close'].iloc[-1]
             except: pass
             
-            # 네이버 실패 시 야후 파이낸스 한국 티커(.KS)로 2차 조회
+            # 네이버 실패 시 야후 파이낸스 코스피 티커(.KS) 백업
             try:
                 yf_ticker = f"{clean_code}.KS"
+                hist = yf.Ticker(yf_ticker).history(period="1d")
+                if not hist.empty:
+                    return hist['Close'].iloc[-1]
+            except: pass
+            
+            # 네이버 실패 시 야후 파이낸스 코스닥 티커(.KQ) 2차 백업
+            try:
+                yf_ticker = f"{clean_code}.KQ"
                 hist = yf.Ticker(yf_ticker).history(period="1d")
                 if not hist.empty:
                     return hist['Close'].iloc[-1]
@@ -196,7 +207,7 @@ def get_stock_info_safe(input_str):
         asset_type = '기타'
         clean_code = ticker.split('.')[0]
 
-        krx_map = get_krx_code_map()
+        krx_map = get_korean_market_map()
         code_to_name = {str(v).strip(): str(k).strip() for k, v in krx_map.items()}
 
         try:
@@ -261,7 +272,7 @@ def color_profit(val):
 
 def calculate_portfolio(df, usd_krw):
     current_prices, eval_values, buy_values, currencies = [], [], [], []
-    krx_map = get_krx_code_map()
+    krx_map = get_korean_market_map()
     code_to_name = {str(v).strip(): str(k).strip() for k, v in krx_map.items()}
 
     for index, row in df.iterrows():
@@ -366,7 +377,7 @@ def get_template_excel():
     return output.getvalue()
 
 with st.expander("⬇️ 엑셀 양식 다운로드"):
-    st.download_button(label="엑셀 양식 받기 (.xlsx)", data=get_template_excel(), file_name='portfolio_template_v6.3.xlsx')
+    st.download_button(label="엑셀 양식 받기 (.xlsx)", data=get_template_excel(), file_name='portfolio_template_v6.4.xlsx')
 
 # -----------------------------------------------------------------------------
 # 4. 메인 로직
@@ -544,7 +555,7 @@ if st.session_state['raw_excel_data'] is not None:
         cur_total = portfolio_dict[sel_sim_sheet]['평가금액'].sum()
 
         with st.expander("➕ 종목 추가하기 (검색 및 자동완성)"):
-            krx_map = get_krx_code_map()
+            krx_map = get_korean_market_map()
             search_options = [f"{k} ({v})" for k, v in CUSTOM_STOCK_MAP.items()]
             for k, v in krx_map.items():
                 opt = f"{k} ({v})"
