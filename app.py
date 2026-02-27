@@ -53,15 +53,14 @@ if 'uploaded_filename' not in st.session_state:
 # -----------------------------------------------------------------------------
 col_title, col_time = st.columns([0.75, 0.25])
 with col_title:
-    st.title("🏦 Portfolio Manager v7.5")
-    st.markdown("##### ✨ 버그픽스(2/27 17:30)")
+    st.title("🏦 Portfolio Manager v7.7")
+    st.markdown("##### ✨ 버그 픽스(2/27 17:40)")
 with col_time:
     kst_timezone = timezone(timedelta(hours=9))
     now_kst = datetime.now(kst_timezone)
     now_str = now_kst.strftime("%Y-%m-%d %H:%M:%S")
     st.write("") 
     st.caption(f"🕒 시스템 갱신 시간 (KST): {now_str}")
-    # 전역 새로고침 버튼만 rerun 허용
     if st.button("🔄 최신 시세로 즉시 갱신", use_container_width=True, type="primary"):
         st.session_state['portfolio_data'] = None
         st.rerun()
@@ -304,6 +303,12 @@ def color_profit(val):
     elif val < 0: return 'color: #00498c'
     return 'color: black'
 
+# [핵심] 통화별 포맷팅 도우미 함수 (USD는 $ 표시, KRW는 원 표시)
+def format_currency_by_row(val, curr):
+    if pd.isna(val): return ""
+    if curr == 'USD': return f"${val:,.2f}"
+    return f"{val:,.0f} 원"
+
 def calculate_portfolio(df, usd_krw):
     current_prices, eval_values, buy_values, currencies = [], [], [], []
     krx_map = get_korean_market_map()
@@ -380,7 +385,8 @@ def get_guide_pdf():
         with open("포트폴리오 매니저_엑셀작성가이드.pdf", "rb") as f:
             return f.read()
     except FileNotFoundError:
-        return "PDF 파일이 깃허브 저장소에 없습니다. 파일명(포트폴리오 매니저_엑셀작성가이드.pdf)을 확인해주세요.".encode('utf-8')
+        # [안정성 강화] utf-8 인코딩 처리로 SyntaxError 원천 차단
+        return "PDF 파일이 저장소에 없습니다.".encode('utf-8')
 
 # -----------------------------------------------------------------------------
 # 4. 파일 업로드 및 데이터 로딩 UI
@@ -396,7 +402,7 @@ if st.session_state['portfolio_data'] is None and st.session_state['raw_excel_da
         st.download_button(
             label="📄 표준 엑셀 양식 다운로드", 
             data=get_template_excel(), 
-            file_name='portfolio_template_v7.5.xlsx', 
+            file_name='portfolio_template_v7.7.xlsx', 
             use_container_width=True
         )
         st.download_button(
@@ -417,7 +423,7 @@ else:
         col_dl, col_up = st.columns([1, 1.5])
         with col_dl:
             st.markdown("**양식 및 가이드 다운로드**")
-            st.download_button("📄 표준 엑셀 양식 받기", data=get_template_excel(), file_name='portfolio_template_v7.5.xlsx', use_container_width=True)
+            st.download_button("📄 표준 엑셀 양식 받기", data=get_template_excel(), file_name='portfolio_template_v7.7.xlsx', use_container_width=True)
             st.download_button("📥 엑셀 작성 가이드 (PDF)", data=get_guide_pdf(), file_name='포트폴리오 매니저_엑셀작성가이드.pdf', mime='application/pdf', use_container_width=True)
         with col_up:
             st.markdown("**데이터 재업로드**")
@@ -431,7 +437,7 @@ if uploaded_file is not None:
         st.session_state['raw_excel_data'] = pd.read_excel(uploaded_file, sheet_name=None)
         st.session_state['uploaded_filename'] = uploaded_file.name
         st.session_state['portfolio_data'] = None 
-        st.rerun() # 파일 신규 업로드 시에만 명시적 rerun 허용
+        st.rerun()
 
 if st.session_state['raw_excel_data'] is not None:
     if st.session_state['portfolio_data'] is None:
@@ -467,7 +473,7 @@ if st.session_state['raw_excel_data'] is not None:
     usd_krw = st.session_state['usd_krw']
 
     # ==========================================
-    # 사이드바: 수익률 비교 기준 설정 (3개 옵션)
+    # 사이드바: 수익률 비교 기준 설정
     # ==========================================
     with st.sidebar:
         st.header("📈 수익률 비교 기준")
@@ -501,44 +507,43 @@ if st.session_state['raw_excel_data'] is not None:
     account_base_vals = {}
     price_col_name = "기준일종가" if compare_mode == "📅 특정기준일 기준" else "매수단가"
 
-    with st.spinner("비교 데이터를 처리하는 중입니다..."):
-        hist_ex_rate = get_hist_exchange_rate(target_date) if compare_mode == "📅 특정기준일 기준" else 1450.0
-        
-        for sheet, df in portfolio_dict.items():
-            new_df = df.copy()
-            if compare_mode == "📅 특정기준일 기준":
-                hist_prices = []
-                hist_bases = []
-                for _, row in new_df.iterrows():
-                    t = row['종목코드']
-                    qty = row['수량']
-                    is_kr = (row['국가'] == '한국') or is_korean_stock(t)
+    hist_ex_rate = get_hist_exchange_rate(target_date) if compare_mode == "📅 특정기준일 기준" else 1450.0
+    
+    for sheet, df in portfolio_dict.items():
+        new_df = df.copy()
+        if compare_mode == "📅 특정기준일 기준":
+            hist_prices = []
+            hist_bases = []
+            for _, row in new_df.iterrows():
+                t = row['종목코드']
+                qty = row['수량']
+                is_kr = (row['국가'] == '한국') or is_korean_stock(t)
+                
+                if t == 'KRW': hp, hb = 1.0, qty
+                elif t == 'USD': hp, hb = hist_ex_rate, qty * hist_ex_rate
+                else:
+                    hp = get_hist_price(t, target_date, is_kr)
+                    hb = hp * qty if is_kr else hp * qty * hist_ex_rate
                     
-                    if t == 'KRW': hp, hb = 1.0, qty
-                    elif t == 'USD': hp, hb = hist_ex_rate, qty * hist_ex_rate
-                    else:
-                        hp = get_hist_price(t, target_date, is_kr)
-                        hb = hp * qty if is_kr else hp * qty * hist_ex_rate
-                        
-                    hist_prices.append(hp)
-                    hist_bases.append(hb)
-                    
-                new_df[price_col_name] = hist_prices
-                new_df['비교금액'] = hist_bases
-                new_df['수익률'] = new_df.apply(lambda x: ((x['평가금액'] - x['비교금액']) / x['비교금액'] * 100) if x['비교금액'] > 0 else 0, axis=1)
-                account_base_vals[sheet] = sum(hist_bases)
+                hist_prices.append(hp)
+                hist_bases.append(hb)
                 
-            elif compare_mode == "📊 매입원가 기준":
-                new_df[price_col_name] = new_df['매수단가']
-                new_df['비교금액'] = new_df['매수금액']
-                account_base_vals[sheet] = new_df['매수금액'].sum()
-                
-            else: # "💰 납입원금 기준"
-                new_df[price_col_name] = new_df['매수단가']
-                new_df['비교금액'] = new_df['매수금액']
-                account_base_vals[sheet] = st.session_state['user_principals'].get(sheet, new_df['매수금액'].sum())
-                
-            display_dict[sheet] = new_df
+            new_df[price_col_name] = hist_prices
+            new_df['비교금액'] = hist_bases
+            new_df['수익률'] = new_df.apply(lambda x: ((x['평가금액'] - x['비교금액']) / x['비교금액'] * 100) if x['비교금액'] > 0 else 0, axis=1)
+            account_base_vals[sheet] = sum(hist_bases)
+            
+        elif compare_mode == "📊 매입원가 기준":
+            new_df[price_col_name] = new_df['매수단가']
+            new_df['비교금액'] = new_df['매수금액']
+            account_base_vals[sheet] = new_df['매수금액'].sum()
+            
+        else: # "💰 납입원금 기준"
+            new_df[price_col_name] = new_df['매수단가']
+            new_df['비교금액'] = new_df['매수금액']
+            account_base_vals[sheet] = st.session_state['user_principals'].get(sheet, new_df['매수금액'].sum())
+            
+        display_dict[sheet] = new_df
 
     # --- 퇴직연금/IRP/DC 제외 로직 ---
     HIDDEN_KEYWORDS = ['퇴직연금', 'IRP', 'DC']
@@ -585,9 +590,15 @@ if st.session_state['raw_excel_data'] is not None:
             st.subheader("📋 전체 자산 상세")
             summary_cols = ['계좌명', '종목명', '업종', '국가', '수량', price_col_name, '현재가', '수익률', '평가금액']
             
-            fmt_dict = {'수량': '{:,.2f}', price_col_name: '{:,.0f}', '현재가': '{:,.0f}', '수익률': '{:+.2f}%', '평가금액': '{:,.0f}'}
+            # [포맷팅 개선] 달러/원화 구분을 위한 DataFrame 재생성
+            disp_dashboard_df = all_df_dashboard[summary_cols + ['통화']].copy()
+            disp_dashboard_df[price_col_name] = disp_dashboard_df.apply(lambda r: format_currency_by_row(r[price_col_name], r['통화']), axis=1)
+            disp_dashboard_df['현재가'] = disp_dashboard_df.apply(lambda r: format_currency_by_row(r['현재가'], r['통화']), axis=1)
+            disp_dashboard_df = disp_dashboard_df.drop(columns=['통화'])
+            
+            fmt_dict = {'수량': '{:,.2f}', '수익률': '{:+.2f}%', '평가금액': '{:,.0f}'}
             st.dataframe(
-                all_df_dashboard[summary_cols].style.format(fmt_dict).map(color_profit, subset=['수익률']),
+                disp_dashboard_df.style.format(fmt_dict).map(color_profit, subset=['수익률']),
                 use_container_width=True, hide_index=True
             )
         else:
@@ -596,7 +607,6 @@ if st.session_state['raw_excel_data'] is not None:
     # --- [TAB 2] 계좌별 상세 ---
     with tab2:
         sheet_names = list(display_dict.keys())
-        # [핵심수정] 위젯 키(Key)를 고정하여 탭 초기화 방지
         selected_sheet = st.selectbox("계좌 선택:", sheet_names, key="tab2_sheet_selector")
         target_df = display_dict[selected_sheet]
         
@@ -622,9 +632,15 @@ if st.session_state['raw_excel_data'] is not None:
         
         st.caption(f"📋 {selected_sheet} 보유 종목")
         
-        fmt_dict_tab2 = {'수량': '{:,.2f}', price_col_name: '{:,.0f}', '현재가': '{:,.0f}', '수익률': '{:+.2f}%', '평가금액': '{:,.0f}'}
+        # [포맷팅 개선] 달러/원화 구분을 위한 DataFrame 재생성
+        disp_target_df = target_df[['종목명', '업종', '수량', price_col_name, '현재가', '수익률', '평가금액', '통화']].copy()
+        disp_target_df[price_col_name] = disp_target_df.apply(lambda r: format_currency_by_row(r[price_col_name], r['통화']), axis=1)
+        disp_target_df['현재가'] = disp_target_df.apply(lambda r: format_currency_by_row(r['현재가'], r['통화']), axis=1)
+        disp_target_df = disp_target_df.drop(columns=['통화'])
+
+        fmt_dict_tab2 = {'수량': '{:,.2f}', '수익률': '{:+.2f}%', '평가금액': '{:,.0f}'}
         st.dataframe(
-            target_df[['종목명', '업종', '수량', price_col_name, '현재가', '수익률', '평가금액']].style.format(fmt_dict_tab2).map(color_profit, subset=['수익률']),
+            disp_target_df.style.format(fmt_dict_tab2).map(color_profit, subset=['수익률']),
             use_container_width=True, hide_index=True
         )
 
@@ -633,13 +649,11 @@ if st.session_state['raw_excel_data'] is not None:
         st.header("🎛️ 리밸런싱 시뮬레이션")
         sim_sheets = list(portfolio_dict.keys())
         
-        # [핵심수정] st.rerun() 제거하여 탭 튕김 완벽 해결
         sel_sim_sheet = st.selectbox("시뮬레이션 대상 계좌:", sim_sheets, key='sim_sheet_selector')
         
         if st.session_state.get('sim_target_sheet') != sel_sim_sheet:
             st.session_state['sim_target_sheet'] = sel_sim_sheet
             st.session_state['sim_df'] = portfolio_dict[sel_sim_sheet].copy()
-            # rerun을 빼고 그냥 session state만 즉시 업데이트
             
         sim_df = st.session_state['sim_df']
         cur_total = portfolio_dict[sel_sim_sheet]['평가금액'].sum()
@@ -671,7 +685,6 @@ if st.session_state['raw_excel_data'] is not None:
                     if info: st.session_state['search_info'] = info
                     else: st.error("종목을 찾을 수 없습니다. 이름이나 코드를 다시 확인해주세요.")
             
-        # [핵심수정] 콜백 함수로 전환하여 버튼 클릭 시 화면 리로드 방지
         def add_sim_item_callback():
             if st.session_state.get('search_info'):
                 inf = st.session_state['search_info']
@@ -686,21 +699,26 @@ if st.session_state['raw_excel_data'] is not None:
 
         if st.session_state['search_info']:
             inf = st.session_state['search_info']
-            search_res_df = pd.DataFrame([{'종목코드': inf['종목코드'], '종목명': inf['종목명'], '현재가': inf['현재가']}])
-            st.dataframe(search_res_df.style.format({'현재가': '{:,.0f} 원'}), hide_index=True, use_container_width=True)
+            # [포맷팅 개선] 검색 결과 달러/원화 표시
+            p_str = format_currency_by_row(inf['현재가'], inf['currency'])
+            search_res_df = pd.DataFrame([{'종목코드': inf['종목코드'], '종목명': inf['종목명'], '현재가': p_str}])
+            st.dataframe(search_res_df, hide_index=True, use_container_width=True)
             
-            # 버튼 클릭 시 즉시 콜백 실행 (st.rerun 안 씀)
             st.button("리스트에 추가", key="add_list_btn", on_click=add_sim_item_callback)
 
+        # [포맷팅 개선] 에디터 내 달러/원화 표시를 위한 별도 DataFrame
+        sim_disp = sim_df[['종목명', '종목코드', '통화', '현재가', '시뮬레이션 수량']].copy()
+        sim_disp['현재가(표시)'] = sim_disp.apply(lambda x: format_currency_by_row(x['현재가'], x['통화']), axis=1)
+
         edited = st.data_editor(
-            sim_df[['종목명', '종목코드', '현재가', '시뮬레이션 수량']],
+            sim_disp[['종목명', '종목코드', '현재가(표시)', '시뮬레이션 수량']],
             column_config={
                 "종목명": st.column_config.TextColumn("종목명", disabled=True),
                 "종목코드": st.column_config.TextColumn("코드", disabled=True),
-                "현재가": st.column_config.NumberColumn("현재가", format="%d 원", disabled=True),
+                "현재가(표시)": st.column_config.TextColumn("현재가", disabled=True), # 문자열이므로 TextColumn 사용
                 "시뮬레이션 수량": st.column_config.NumberColumn("목표 수량", min_value=0, step=1, format="%.2f")
             },
-            use_container_width=True, num_rows="dynamic", key="sim_data_editor"
+            use_container_width=True, num_rows="dynamic", key="sim_editor"
         )
         
         valid_indices = edited.index.intersection(sim_df.index)
@@ -736,13 +754,21 @@ if st.session_state['raw_excel_data'] is not None:
         
         if not plan_df.empty:
             plan_df['구분'] = plan_df['수량변동'].apply(lambda x: '매수 (BUY)' if x > 0 else '매도 (SELL)')
-            plan_display = plan_df[['종목명', '종목코드', '현재가', '구분', '수량', '시뮬레이션 수량', '수량변동', '매매금액']].copy()
+            # [포맷팅 개선] 매매 계획표 달러/원화 표시
+            plan_df['현재가_표시'] = plan_df.apply(lambda x: format_currency_by_row(x['현재가'], x['통화']), axis=1)
+            
+            plan_display = plan_df[['종목명', '종목코드', '현재가_표시', '구분', '수량', '시뮬레이션 수량', '수량변동', '매매금액']].copy()
             plan_display.columns = ['종목명', '코드', '현재가', '구분', '현재수량', '목표수량', '변동수량', '예상 소요금액']
             
+            def color_red_blue(val):
+                if val > 0: return 'color: #ff2b2b'
+                elif val < 0: return 'color: #00498c'
+                return ''
+                
             st.dataframe(
                 plan_display.style.format({
-                    '현재가': '{:,.0f}', '현재수량': '{:,.2f}', '목표수량': '{:,.2f}', '변동수량': '{:+,.2f}', '예상 소요금액': '{:+,.0f} 원'
-                }).map(lambda x: 'color: #ff2b2b' if x > 0 else 'color: #00498c', subset=['변동수량', '예상 소요금액']),
+                    '현재수량': '{:,.2f}', '목표수량': '{:,.2f}', '변동수량': '{:+,.2f}', '예상 소요금액': '{:+,.0f} 원'
+                }).map(color_red_blue, subset=['변동수량', '예상 소요금액']),
                 use_container_width=True, hide_index=True
             )
         else:
