@@ -3,7 +3,7 @@ import pandas as pd
 import yfinance as yf
 import plotly.express as px
 import io
-import re  # [추가] 텍스트 추출을 위한 정규표현식 라이브러리
+import re
 from datetime import datetime, timedelta, timezone
 import FinanceDataReader as fdr
 import time
@@ -52,8 +52,8 @@ if 'uploaded_filename' not in st.session_state:
 # 상단 헤더
 col_title, col_time = st.columns([0.7, 0.3])
 with col_title:
-    st.title("🏦 포트폴리오 매니저 v6.2")
-    st.markdown("Final Fix (시뮬레이션 개선)")
+    st.title("🏦 포트폴리오 매니저 v6.3")
+    st.markdown("Final Fix (시뮬레이션 안정화)")
 with col_time:
     # 한국 시간(KST) 설정
     kst_timezone = timezone(timedelta(hours=9))
@@ -89,17 +89,34 @@ def get_all_exchange_rates():
 
 @st.cache_data(ttl=3600*24)
 def get_krx_code_map():
+    """
+    [수정] 일반 주식뿐만 아니라 국내 ETF 전체 목록도 함께 로드하여 딕셔너리로 병합
+    """
+    name_to_code = {}
+    
+    # 1. 국내 일반 주식 (KOSPI, KOSDAQ 등)
     try:
-        df = fdr.StockListing('KRX')
-        # [수정] 공백이나 자료형 차이로 매핑에 실패하지 않도록 명시적 문자열 처리
-        name_to_code = {}
-        for _, row in df.iterrows():
+        df_stock = fdr.StockListing('KRX')
+        for _, row in df_stock.iterrows():
             name = str(row['Name']).strip()
             code = str(row['Code']).strip()
             name_to_code[name] = code
-        return name_to_code
     except:
-        return {}
+        pass
+        
+    # 2. 국내 ETF 종목 (KODEX, TIGER, KBSTAR 등) 추가
+    try:
+        df_etf = fdr.StockListing('ETF/KR')
+        for _, row in df_etf.iterrows():
+            name = str(row['Name']).strip()
+            # ETF는 Symbol이라는 컬럼명을 사용하는 경우가 많음
+            code_col = 'Symbol' if 'Symbol' in df_etf.columns else 'Code'
+            code = str(row[code_col]).strip()
+            name_to_code[name] = code
+    except:
+        pass
+        
+    return name_to_code
 
 # TIGER KRX금현물(0072R0) 등 특수 종목 매핑
 CUSTOM_STOCK_MAP = {
@@ -136,6 +153,7 @@ def get_current_price(ticker):
     ticker = str(ticker).strip().upper()
     
     try:
+        # 1. 한국 주식으로 식별된 경우 (네이버 파이낸스 최우선 조회)
         if is_korean_stock(ticker):
             clean_code = ticker.split('.')[0]
             
@@ -145,6 +163,7 @@ def get_current_price(ticker):
                     return df['Close'].iloc[-1]
             except: pass
             
+            # 네이버 실패 시 야후 파이낸스 한국 티커(.KS)로 2차 조회
             try:
                 yf_ticker = f"{clean_code}.KS"
                 hist = yf.Ticker(yf_ticker).history(period="1d")
@@ -152,6 +171,7 @@ def get_current_price(ticker):
                     return hist['Close'].iloc[-1]
             except: pass
 
+        # 2. 미국 주식이거나, 한국 주식 판별이 안 된 경우 (야후 파이낸스 조회)
         ticker_obj = yf.Ticker(ticker)
         hist = ticker_obj.history(period="1d")
         if not hist.empty:
@@ -176,7 +196,6 @@ def get_stock_info_safe(input_str):
         asset_type = '기타'
         clean_code = ticker.split('.')[0]
 
-        # [수정] 역매핑 생성 시에도 문자열 정제 확실히 처리
         krx_map = get_krx_code_map()
         code_to_name = {str(v).strip(): str(k).strip() for k, v in krx_map.items()}
 
@@ -201,7 +220,6 @@ def get_stock_info_safe(input_str):
              if not input_str.isdigit() and not input_str.encode().isalpha():
                 name = input_str
 
-        # [수정] 혹시라도 이름이 여전히 코드로 남아있다면 다시 한번 강제 매핑 시도
         if name == ticker and clean_code in code_to_name:
             name = code_to_name[clean_code]
 
@@ -244,7 +262,6 @@ def color_profit(val):
 def calculate_portfolio(df, usd_krw):
     current_prices, eval_values, buy_values, currencies = [], [], [], []
     krx_map = get_krx_code_map()
-    # [수정] 엑셀 데이터 매핑 시에도 오류 방지 처리
     code_to_name = {str(v).strip(): str(k).strip() for k, v in krx_map.items()}
 
     for index, row in df.iterrows():
@@ -349,7 +366,7 @@ def get_template_excel():
     return output.getvalue()
 
 with st.expander("⬇️ 엑셀 양식 다운로드"):
-    st.download_button(label="엑셀 양식 받기 (.xlsx)", data=get_template_excel(), file_name='portfolio_template_v6.2.xlsx')
+    st.download_button(label="엑셀 양식 받기 (.xlsx)", data=get_template_excel(), file_name='portfolio_template_v6.3.xlsx')
 
 # -----------------------------------------------------------------------------
 # 4. 메인 로직
@@ -526,9 +543,7 @@ if st.session_state['raw_excel_data'] is not None:
         sim_df = st.session_state['sim_df']
         cur_total = portfolio_dict[sel_sim_sheet]['평가금액'].sum()
 
-        # [수정] 드롭다운(자동완성) 방식 적용 시작
         with st.expander("➕ 종목 추가하기 (검색 및 자동완성)"):
-            # 검색 리스트 생성
             krx_map = get_krx_code_map()
             search_options = [f"{k} ({v})" for k, v in CUSTOM_STOCK_MAP.items()]
             for k, v in krx_map.items():
@@ -536,16 +551,13 @@ if st.session_state['raw_excel_data'] is not None:
                 if opt not in search_options:
                     search_options.append(opt)
             
-            # 검색 방식 선택
-            search_mode = st.radio("검색 방식 선택", ["📝 리스트에서 검색 (자동완성)", "⌨️ 직접 입력 (해외 ETF/신규종목)"], horizontal=True)
+            search_mode = st.radio("검색 방식 선택", ["📝 리스트에서 검색 (국내 종목/ETF 자동완성)", "⌨️ 직접 입력 (해외 종목/코드 입력)"], horizontal=True)
             
             ac1, ac2 = st.columns([3, 1])
             
             if "리스트" in search_mode:
-                # Selectbox를 통해 키보드로 타이핑하면 자동 필터링됨
                 input_val = ac1.selectbox("종목을 선택하세요 (타이핑하여 검색 가능)", [""] + search_options, index=0)
             else:
-                # Selectbox에 없는 종목을 위한 텍스트 창
                 input_val = ac1.text_input("종목명 또는 티커(코드) 직접 입력", placeholder="예: TSLA, AAPL, 005930")
                 
             if ac2.button("검색"):
@@ -553,7 +565,6 @@ if st.session_state['raw_excel_data'] is not None:
                     st.error("종목을 선택하거나 입력해주세요.")
                 else:
                     search_target = input_val
-                    # 리스트에서 선택한 경우, 괄호 안의 코드만 추출 (예: "삼성전자 (005930)" -> "005930")
                     if "리스트" in search_mode:
                         match = re.search(r'\((.*?)\)$', input_val)
                         if match:
@@ -564,7 +575,6 @@ if st.session_state['raw_excel_data'] is not None:
                         st.session_state['search_info'] = info
                     else: 
                         st.error("종목을 찾을 수 없습니다. 티커를 다시 확인해주세요.")
-        # [수정] 드롭다운(자동완성) 방식 적용 끝
             
         if st.session_state['search_info']:
             inf = st.session_state['search_info']
