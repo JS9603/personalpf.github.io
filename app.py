@@ -49,12 +49,12 @@ if 'uploaded_filename' not in st.session_state:
     st.session_state['uploaded_filename'] = None
 
 # -----------------------------------------------------------------------------
-# [디자인 개편] 상단 타이틀 배너
+# 상단 타이틀 배너
 # -----------------------------------------------------------------------------
 col_title, col_time = st.columns([0.75, 0.25])
 with col_title:
-    st.title("🏦 Portfolio Manager v7.2")
-    st.markdown("##### ✨ 정상화 완료")
+    st.title("🏦 Portfolio Manager v7.3")
+    st.markdown("##### ✨ 가이드라인 추가")
 with col_time:
     kst_timezone = timezone(timedelta(hours=9))
     now_kst = datetime.now(kst_timezone)
@@ -364,7 +364,7 @@ def calculate_portfolio(df, usd_krw):
     return df
 
 # -----------------------------------------------------------------------------
-# 3. 엑셀 양식 제공
+# 3. 엑셀 다운로드 및 PDF 로드 기능
 # -----------------------------------------------------------------------------
 def get_template_excel():
     output = io.BytesIO()
@@ -374,22 +374,35 @@ def get_template_excel():
         pd.DataFrame({'종목코드': ['005930', '0072R0'], '종목명': ['삼성전자', 'TIGER KRX금현물'], '업종': ['반도체', '원자재'], '국가': ['한국', '한국'], '수량': [100, 50], '매수단가': [60000, 12000], '납입원금': [6000000, 0]}).to_excel(writer, index=False, sheet_name='퇴직연금(IRP)')
     return output.getvalue()
 
+def get_guide_pdf():
+    try:
+        with open("포트폴리오 매니저_엑셀작성가이드.pdf", "rb") as f:
+            return f.read()
+    except FileNotFoundError:
+        return b"PDF file not found. Please ensure '포트폴리오 매니저_엑셀작성가이드.pdf' is in the same directory."
+
 # -----------------------------------------------------------------------------
-# [디자인 개편] 4. 파일 업로드 및 데이터 로딩 UI 
+# 4. 파일 업로드 및 데이터 로딩 UI
 # -----------------------------------------------------------------------------
 uploaded_file = None
 
 if st.session_state['portfolio_data'] is None and st.session_state['raw_excel_data'] is None:
-    # 💡 초기 화면: 대시보드 대신 깔끔한 시작 가이드(Onboarding) 화면 제공
     st.markdown("### 🚀 자산 포트폴리오 관리 시작하기")
     
     col_dl, col_up = st.columns([1, 1.5])
     with col_dl:
-        st.info("💡 **Step 1.** 처음이신가요?\n\n엑셀 양식을 다운로드하여 보유 자산을 입력하세요.")
+        st.info("💡 **Step 1.** 처음이신가요?\n\n엑셀 양식과 작성 가이드를 다운로드하여 보유 자산을 입력하세요.")
         st.download_button(
             label="📄 표준 엑셀 양식 다운로드", 
             data=get_template_excel(), 
-            file_name='portfolio_template_v7.2.xlsx', 
+            file_name='portfolio_template_v7.3.xlsx', 
+            use_container_width=True
+        )
+        st.download_button(
+            label="📥 엑셀 작성 가이드 (PDF)", 
+            data=get_guide_pdf(), 
+            file_name='포트폴리오 매니저_엑셀작성가이드.pdf', 
+            mime='application/pdf',
             use_container_width=True
         )
     with col_up:
@@ -397,14 +410,14 @@ if st.session_state['portfolio_data'] is None and st.session_state['raw_excel_da
         uploaded_file = st.file_uploader("엑셀 파일 업로드", type=['xlsx'], label_visibility="collapsed")
     
     if uploaded_file is None:
-        st.stop() # 업로드 전까지 대시보드 숨김
+        st.stop()
 else:
-    # 💡 대시보드 상태: 거추장스러운 업로드 창을 얇은 Expander로 쏙 숨김
-    with st.expander("📁 데이터 파일 재업로드 및 양식 다운로드"):
+    with st.expander("📁 데이터 파일 재업로드 및 양식/가이드 다운로드"):
         col_dl, col_up = st.columns([1, 1.5])
         with col_dl:
-            st.markdown("**양식 다운로드**")
-            st.download_button("📄 표준 엑셀 양식 받기", data=get_template_excel(), file_name='portfolio_template_v7.2.xlsx', use_container_width=True)
+            st.markdown("**양식 및 가이드 다운로드**")
+            st.download_button("📄 표준 엑셀 양식 받기", data=get_template_excel(), file_name='portfolio_template_v7.3.xlsx', use_container_width=True)
+            st.download_button("📥 엑셀 작성 가이드 (PDF)", data=get_guide_pdf(), file_name='포트폴리오 매니저_엑셀작성가이드.pdf', mime='application/pdf', use_container_width=True)
         with col_up:
             st.markdown("**데이터 재업로드**")
             uploaded_file = st.file_uploader("새로운 엑셀 파일 업로드", type=['xlsx'], label_visibility="collapsed")
@@ -417,7 +430,7 @@ if uploaded_file is not None:
         st.session_state['raw_excel_data'] = pd.read_excel(uploaded_file, sheet_name=None)
         st.session_state['uploaded_filename'] = uploaded_file.name
         st.session_state['portfolio_data'] = None 
-        st.rerun() # 파일 업로드 시 즉시 리프레시하여 대시보드 렌더링
+        st.rerun()
 
 if st.session_state['raw_excel_data'] is not None:
     if st.session_state['portfolio_data'] is None:
@@ -627,7 +640,6 @@ if st.session_state['raw_excel_data'] is not None:
         sim_df = st.session_state['sim_df']
         cur_total = portfolio_dict[sel_sim_sheet]['평가금액'].sum()
 
-        # [원상복구] 시뮬레이션 종목 검색창 (사용자가 가장 편해했던 기존 UI)
         with st.expander("➕ 종목 추가하기 (검색 및 자동완성)"):
             krx_map = get_korean_market_map()
             search_options = [f"{k} ({v})" for k, v in CUSTOM_STOCK_MAP.items()]
