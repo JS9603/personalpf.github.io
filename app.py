@@ -53,8 +53,8 @@ if 'uploaded_filename' not in st.session_state:
 # -----------------------------------------------------------------------------
 col_title, col_time = st.columns([0.75, 0.25])
 with col_title:
-    st.title("🏦 Portfolio Manager v7.3")
-    st.markdown("##### ✨ 가이드라인 추가")
+    st.title("🏦 Portfolio Manager v7.4")
+    st.markdown("##### ✨ 깡통 정상화")
 with col_time:
     kst_timezone = timezone(timedelta(hours=9))
     now_kst = datetime.now(kst_timezone)
@@ -379,7 +379,8 @@ def get_guide_pdf():
         with open("포트폴리오 매니저_엑셀작성가이드.pdf", "rb") as f:
             return f.read()
     except FileNotFoundError:
-        return b"PDF file not found. Please ensure '포트폴리오 매니저_엑셀작성가이드.pdf' is in the same directory."
+        # [오류수정] 한글 문자가 포함된 경우 바이트 리터럴 b"" 대신 encode() 사용
+        return "PDF 파일이 깃허브 저장소에 없습니다. 파일명(포트폴리오 매니저_엑셀작성가이드.pdf)을 확인해주세요.".encode('utf-8')
 
 # -----------------------------------------------------------------------------
 # 4. 파일 업로드 및 데이터 로딩 UI
@@ -395,7 +396,7 @@ if st.session_state['portfolio_data'] is None and st.session_state['raw_excel_da
         st.download_button(
             label="📄 표준 엑셀 양식 다운로드", 
             data=get_template_excel(), 
-            file_name='portfolio_template_v7.3.xlsx', 
+            file_name='portfolio_template_v7.4.xlsx', 
             use_container_width=True
         )
         st.download_button(
@@ -416,7 +417,7 @@ else:
         col_dl, col_up = st.columns([1, 1.5])
         with col_dl:
             st.markdown("**양식 및 가이드 다운로드**")
-            st.download_button("📄 표준 엑셀 양식 받기", data=get_template_excel(), file_name='portfolio_template_v7.3.xlsx', use_container_width=True)
+            st.download_button("📄 표준 엑셀 양식 받기", data=get_template_excel(), file_name='portfolio_template_v7.4.xlsx', use_container_width=True)
             st.download_button("📥 엑셀 작성 가이드 (PDF)", data=get_guide_pdf(), file_name='포트폴리오 매니저_엑셀작성가이드.pdf', mime='application/pdf', use_container_width=True)
         with col_up:
             st.markdown("**데이터 재업로드**")
@@ -640,6 +641,7 @@ if st.session_state['raw_excel_data'] is not None:
         sim_df = st.session_state['sim_df']
         cur_total = portfolio_dict[sel_sim_sheet]['평가금액'].sum()
 
+        # [원상복구] 시뮬레이션 종목 검색창
         with st.expander("➕ 종목 추가하기 (검색 및 자동완성)"):
             krx_map = get_korean_market_map()
             search_options = [f"{k} ({v})" for k, v in CUSTOM_STOCK_MAP.items()]
