@@ -3,6 +3,7 @@ import pandas as pd
 import yfinance as yf
 import plotly.express as px
 import io
+import re  # [추가] 텍스트 추출을 위한 정규표현식 라이브러리
 from datetime import datetime, timedelta, timezone
 import FinanceDataReader as fdr
 import time
@@ -41,7 +42,7 @@ if 'sim_df' not in st.session_state:
 if 'user_principals' not in st.session_state:
     st.session_state['user_principals'] = {}
 
-# [수정] 엑셀 원본 데이터(백데이터) 유지를 위한 세션 추가
+# 엑셀 원본 데이터(백데이터) 유지를 위한 세션
 if 'raw_excel_data' not in st.session_state:
     st.session_state['raw_excel_data'] = None
 
@@ -51,8 +52,8 @@ if 'uploaded_filename' not in st.session_state:
 # 상단 헤더
 col_title, col_time = st.columns([0.7, 0.3])
 with col_title:
-    st.title("🏦 포트폴리오 매니저 v6.1")
-    st.markdown("Final Fix (즉시 갱신시 데이터보존)")
+    st.title("🏦 포트폴리오 매니저 v6.2")
+    st.markdown("Final Fix (시뮬레이션 개선)")
 with col_time:
     # 한국 시간(KST) 설정
     kst_timezone = timezone(timedelta(hours=9))
@@ -90,7 +91,12 @@ def get_all_exchange_rates():
 def get_krx_code_map():
     try:
         df = fdr.StockListing('KRX')
-        name_to_code = dict(zip(df['Name'], df['Code']))
+        # [수정] 공백이나 자료형 차이로 매핑에 실패하지 않도록 명시적 문자열 처리
+        name_to_code = {}
+        for _, row in df.iterrows():
+            name = str(row['Name']).strip()
+            code = str(row['Code']).strip()
+            name_to_code[name] = code
         return name_to_code
     except:
         return {}
@@ -104,7 +110,6 @@ CUSTOM_STOCK_MAP = {
     'JEPI': 'JEPI', 'TLT': 'TLT', 'SOXL': 'SOXL', 'TQQQ': 'TQQQ',
     '리얼티인컴': 'O', '아이온큐': 'IONQ', '팔란티어': 'PLTR',
     'IAU': 'IAU', '금': 'IAU', '골드': 'IAU', 'GLD': 'GLD',
-    # 국내 특수 종목 추가
     'TIGER KRX금현물': '0072R0', '금현물': '0072R0', 'KRX금': '0072R0', '한국금현물': '0072R0'
 }
 
@@ -120,13 +125,9 @@ def resolve_ticker(input_str):
     return input_str.upper()
 
 def is_korean_stock(ticker):
-    """
-    한국 주식 판별 로직
-    """
     ticker = str(ticker).strip().upper()
     if ticker.endswith('.KS') or ticker.endswith('.KQ'):
         return True
-    # 숫자 6자리거나, 6자리면서 첫글자가 숫자(0072R0 등)
     if len(ticker) == 6 and ticker[0].isdigit():
         return True
     return False
@@ -135,18 +136,15 @@ def get_current_price(ticker):
     ticker = str(ticker).strip().upper()
     
     try:
-        # 1. 한국 주식으로 식별된 경우
         if is_korean_stock(ticker):
             clean_code = ticker.split('.')[0]
             
-            # 시도 A: FinanceDataReader
             try:
                 df = fdr.DataReader(clean_code)
                 if not df.empty:
                     return df['Close'].iloc[-1]
             except: pass
             
-            # 시도 B: yfinance에 .KS 붙여서 시도
             try:
                 yf_ticker = f"{clean_code}.KS"
                 hist = yf.Ticker(yf_ticker).history(period="1d")
@@ -154,7 +152,6 @@ def get_current_price(ticker):
                     return hist['Close'].iloc[-1]
             except: pass
 
-        # 2. 미국 주식이거나, 위에서 실패한 경우 yfinance 원본 시도
         ticker_obj = yf.Ticker(ticker)
         hist = ticker_obj.history(period="1d")
         if not hist.empty:
@@ -177,13 +174,14 @@ def get_stock_info_safe(input_str):
         name = ticker 
         sector = '기타'
         asset_type = '기타'
+        clean_code = ticker.split('.')[0]
+
+        # [수정] 역매핑 생성 시에도 문자열 정제 확실히 처리
+        krx_map = get_krx_code_map()
+        code_to_name = {str(v).strip(): str(k).strip() for k, v in krx_map.items()}
 
         try:
             if is_korean:
-                clean_code = ticker.split('.')[0]
-                krx_map = get_krx_code_map()
-                code_to_name = {v: k for k, v in krx_map.items()}
-                
                 if clean_code in code_to_name:
                     name = code_to_name[clean_code]
                 elif ticker in TICKER_TO_KOREAN:
@@ -202,6 +200,10 @@ def get_stock_info_safe(input_str):
         except:
              if not input_str.isdigit() and not input_str.encode().isalpha():
                 name = input_str
+
+        # [수정] 혹시라도 이름이 여전히 코드로 남아있다면 다시 한번 강제 매핑 시도
+        if name == ticker and clean_code in code_to_name:
+            name = code_to_name[clean_code]
 
         return {
             '종목코드': ticker, 
@@ -242,7 +244,8 @@ def color_profit(val):
 def calculate_portfolio(df, usd_krw):
     current_prices, eval_values, buy_values, currencies = [], [], [], []
     krx_map = get_krx_code_map()
-    code_to_name = {v: k for k, v in krx_map.items()}
+    # [수정] 엑셀 데이터 매핑 시에도 오류 방지 처리
+    code_to_name = {str(v).strip(): str(k).strip() for k, v in krx_map.items()}
 
     for index, row in df.iterrows():
         raw_ticker = str(row['종목코드']).strip()
@@ -346,26 +349,23 @@ def get_template_excel():
     return output.getvalue()
 
 with st.expander("⬇️ 엑셀 양식 다운로드"):
-    st.download_button(label="엑셀 양식 받기 (.xlsx)", data=get_template_excel(), file_name='portfolio_template_v6.1.xlsx')
+    st.download_button(label="엑셀 양식 받기 (.xlsx)", data=get_template_excel(), file_name='portfolio_template_v6.2.xlsx')
 
 # -----------------------------------------------------------------------------
 # 4. 메인 로직
 # -----------------------------------------------------------------------------
 uploaded_file = st.file_uploader("📂 엑셀 파일을 업로드하세요", type=['xlsx'])
 
-# [수정] 엑셀 파일을 새로 업로드 했을 때만 세션(원본 데이터) 갱신
 if uploaded_file is not None:
     if st.session_state['uploaded_filename'] != uploaded_file.name:
         st.session_state['raw_excel_data'] = pd.read_excel(uploaded_file, sheet_name=None)
         st.session_state['uploaded_filename'] = uploaded_file.name
-        st.session_state['portfolio_data'] = None  # 새 파일 업로드 시 포트폴리오 재계산 트리거
+        st.session_state['portfolio_data'] = None 
 
-# [수정] 위젯이 비워져도 세션에 백데이터가 존재하면 로직을 계속 실행
 if st.session_state['raw_excel_data'] is not None:
     if st.session_state['portfolio_data'] is None:
         try:
             usd_krw = get_exchange_rate()
-            # 업로드된 파일 변수 대신 세션에 캐싱된 원본 데이터를 사용
             xls = st.session_state['raw_excel_data']
             
             processed_data = {}
@@ -443,10 +443,9 @@ if st.session_state['raw_excel_data'] is not None:
 
     all_df_raw = pd.concat(portfolio_dict.values(), ignore_index=True)
 
-
     tab1, tab2, tab3, tab4 = st.tabs(["📊 통합 대시보드", "📂 계좌별 상세", "🎛️ 시뮬레이션", "📝 원본 데이터"])
 
-    # --- [TAB 1] 통합 대시보드 (퇴직연금 제외됨) ---
+    # --- [TAB 1] 통합 대시보드 ---
     with tab1:
         st.subheader("🌐 전체 자산 현황 (퇴직연금 제외)")
         
@@ -480,9 +479,9 @@ if st.session_state['raw_excel_data'] is not None:
                 use_container_width=True, hide_index=True
             )
         else:
-            st.info("통합 대시보드에 표시할 계좌가 없습니다. (모든 계좌가 숨김 처리되었거나 데이터가 없습니다.)")
+            st.info("통합 대시보드에 표시할 계좌가 없습니다.")
 
-    # --- [TAB 2] 계좌별 상세 (업종 차트 포함) ---
+    # --- [TAB 2] 계좌별 상세 ---
     with tab2:
         sheet_names = list(portfolio_dict.keys())
         selected_sheet = st.selectbox("계좌 선택:", sheet_names)
@@ -527,39 +526,71 @@ if st.session_state['raw_excel_data'] is not None:
         sim_df = st.session_state['sim_df']
         cur_total = portfolio_dict[sel_sim_sheet]['평가금액'].sum()
 
-        with st.expander("➕ 종목 추가하기 (이름으로 검색 가능)"):
-            ac1, ac2 = st.columns([3, 1])
-            input_val = ac1.text_input("종목명 또는 코드 입력 (예: 삼성전자, TSLA, 금)")
-            if ac2.button("검색"):
-                info = get_stock_info_safe(input_val)
-                if info: st.session_state['search_info'] = info
-                else: st.error("종목을 찾을 수 없습니다.")
+        # [수정] 드롭다운(자동완성) 방식 적용 시작
+        with st.expander("➕ 종목 추가하기 (검색 및 자동완성)"):
+            # 검색 리스트 생성
+            krx_map = get_krx_code_map()
+            search_options = [f"{k} ({v})" for k, v in CUSTOM_STOCK_MAP.items()]
+            for k, v in krx_map.items():
+                opt = f"{k} ({v})"
+                if opt not in search_options:
+                    search_options.append(opt)
             
-            if st.session_state['search_info']:
-                inf = st.session_state['search_info']
+            # 검색 방식 선택
+            search_mode = st.radio("검색 방식 선택", ["📝 리스트에서 검색 (자동완성)", "⌨️ 직접 입력 (해외 ETF/신규종목)"], horizontal=True)
+            
+            ac1, ac2 = st.columns([3, 1])
+            
+            if "리스트" in search_mode:
+                # Selectbox를 통해 키보드로 타이핑하면 자동 필터링됨
+                input_val = ac1.selectbox("종목을 선택하세요 (타이핑하여 검색 가능)", [""] + search_options, index=0)
+            else:
+                # Selectbox에 없는 종목을 위한 텍스트 창
+                input_val = ac1.text_input("종목명 또는 티커(코드) 직접 입력", placeholder="예: TSLA, AAPL, 005930")
                 
-                search_res_df = pd.DataFrame([{
-                    '종목코드': inf['종목코드'],
-                    '종목명': inf['종목명'],
-                    '현재가': inf['현재가']
-                }])
+            if ac2.button("검색"):
+                if not input_val:
+                    st.error("종목을 선택하거나 입력해주세요.")
+                else:
+                    search_target = input_val
+                    # 리스트에서 선택한 경우, 괄호 안의 코드만 추출 (예: "삼성전자 (005930)" -> "005930")
+                    if "리스트" in search_mode:
+                        match = re.search(r'\((.*?)\)$', input_val)
+                        if match:
+                            search_target = match.group(1)
+                            
+                    info = get_stock_info_safe(search_target)
+                    if info: 
+                        st.session_state['search_info'] = info
+                    else: 
+                        st.error("종목을 찾을 수 없습니다. 티커를 다시 확인해주세요.")
+        # [수정] 드롭다운(자동완성) 방식 적용 끝
+            
+        if st.session_state['search_info']:
+            inf = st.session_state['search_info']
+            
+            search_res_df = pd.DataFrame([{
+                '종목코드': inf['종목코드'],
+                '종목명': inf['종목명'],
+                '현재가': inf['현재가']
+            }])
 
-                st.dataframe(
-                    search_res_df.style.format({'현재가': '{:,.0f} 원'}),
-                    hide_index=True,
-                    use_container_width=True
-                )
-                
-                if st.button("리스트에 추가"):
-                    new_row = {
-                        '종목코드': inf['종목코드'], '종목명': inf['종목명'], '업종': inf['업종'],
-                        '국가': inf['국가'], '유형': inf['유형'], '수량': 0, '매수단가': 0,
-                        '현재가': inf['현재가'], '매수금액': 0, '평가금액': 0, '수익률': 0,
-                        '통화': inf['currency'], '시뮬레이션 수량': 0, '계좌명': sel_sim_sheet
-                    }
-                    st.session_state['sim_df'] = pd.concat([sim_df, pd.DataFrame([new_row])], ignore_index=True)
-                    st.session_state['search_info'] = None
-                    st.rerun()
+            st.dataframe(
+                search_res_df.style.format({'현재가': '{:,.0f} 원'}),
+                hide_index=True,
+                use_container_width=True
+            )
+            
+            if st.button("리스트에 추가"):
+                new_row = {
+                    '종목코드': inf['종목코드'], '종목명': inf['종목명'], '업종': inf['업종'],
+                    '국가': inf['국가'], '유형': inf['유형'], '수량': 0, '매수단가': 0,
+                    '현재가': inf['현재가'], '매수금액': 0, '평가금액': 0, '수익률': 0,
+                    '통화': inf['currency'], '시뮬레이션 수량': 0, '계좌명': sel_sim_sheet
+                }
+                st.session_state['sim_df'] = pd.concat([sim_df, pd.DataFrame([new_row])], ignore_index=True)
+                st.session_state['search_info'] = None
+                st.rerun()
 
         edited = st.data_editor(
             sim_df[['종목명', '종목코드', '현재가', '시뮬레이션 수량']],
