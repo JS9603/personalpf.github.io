@@ -53,8 +53,8 @@ if 'uploaded_filename' not in st.session_state:
 # -----------------------------------------------------------------------------
 col_title, col_time = st.columns([0.75, 0.25])
 with col_title:
-    st.title("🏦 Portfolio Manager v7.7")
-    st.markdown("##### ✨ 버그 픽스(2/27 17:40)")
+    st.title("🏦 Portfolio Manager v7.8")
+    st.markdown("##### ✨ 버그 픽스픽스픽스 (2/27 17:45)")
 with col_time:
     kst_timezone = timezone(timedelta(hours=9))
     now_kst = datetime.now(kst_timezone)
@@ -225,6 +225,10 @@ def get_naver_stock_info(code):
 
 def get_current_price(ticker):
     ticker = str(ticker).strip().upper()
+    # [수정] 현금 자산은 무조건 가격을 1.0으로 고정하여 환율 이중 계산(제곱) 방지
+    if ticker in ['KRW', 'USD']:
+        return 1.0
+        
     try:
         if is_korean_stock(ticker):
             clean_code = ticker.split('.')[0]
@@ -249,6 +253,19 @@ def get_current_price(ticker):
 
 def get_stock_info_safe(input_str):
     ticker = resolve_ticker_naver(str(input_str))
+    
+    # [수정] 현금 자산 검색 시 명시적인 결과 반환
+    if ticker in ['KRW', 'USD']:
+        return {
+            '종목코드': ticker,
+            '종목명': '원화 현금' if ticker == 'KRW' else '달러 현금',
+            '업종': '현금',
+            '현재가': 1.0,
+            '국가': '한국' if ticker == 'KRW' else '미국',
+            '유형': '현금',
+            'currency': ticker
+        }
+        
     try:
         price = get_current_price(ticker)
         if price == 0: return None
@@ -303,10 +320,14 @@ def color_profit(val):
     elif val < 0: return 'color: #00498c'
     return 'color: black'
 
-# [핵심] 통화별 포맷팅 도우미 함수 (USD는 $ 표시, KRW는 원 표시)
-def format_currency_by_row(val, curr):
+# [수정] 스마트 포맷팅: 사용자가 USD 매수단가를 환율(1300 등)로 적었을 때 혼동 방지
+def format_price_smart(val, ticker, curr):
     if pd.isna(val): return ""
-    if curr == 'USD': return f"${val:,.2f}"
+    ticker = str(ticker).strip().upper()
+    if ticker == 'USD' and val > 50: 
+        return f"{val:,.0f} 원"
+    if curr == 'USD': 
+        return f"${val:,.2f}"
     return f"{val:,.0f} 원"
 
 def calculate_portfolio(df, usd_krw):
@@ -336,7 +357,8 @@ def calculate_portfolio(df, usd_krw):
         if ticker == 'KRW':
             price, eval_val, buy_val, currency = 1.0, qty, qty * avg_price, 'KRW'
         elif ticker == 'USD':
-            price = usd_krw
+            # [핵심수정] 달러 본질 가격은 1.0으로 고정
+            price = 1.0
             eval_val = qty * usd_krw
             buy_val = (qty * avg_price * usd_krw) if avg_price < 50 else (qty * avg_price)
             currency = 'USD'
@@ -385,7 +407,6 @@ def get_guide_pdf():
         with open("포트폴리오 매니저_엑셀작성가이드.pdf", "rb") as f:
             return f.read()
     except FileNotFoundError:
-        # [안정성 강화] utf-8 인코딩 처리로 SyntaxError 원천 차단
         return "PDF 파일이 저장소에 없습니다.".encode('utf-8')
 
 # -----------------------------------------------------------------------------
@@ -402,7 +423,7 @@ if st.session_state['portfolio_data'] is None and st.session_state['raw_excel_da
         st.download_button(
             label="📄 표준 엑셀 양식 다운로드", 
             data=get_template_excel(), 
-            file_name='portfolio_template_v7.7.xlsx', 
+            file_name='portfolio_template_v7.8.xlsx', 
             use_container_width=True
         )
         st.download_button(
@@ -423,7 +444,7 @@ else:
         col_dl, col_up = st.columns([1, 1.5])
         with col_dl:
             st.markdown("**양식 및 가이드 다운로드**")
-            st.download_button("📄 표준 엑셀 양식 받기", data=get_template_excel(), file_name='portfolio_template_v7.7.xlsx', use_container_width=True)
+            st.download_button("📄 표준 엑셀 양식 받기", data=get_template_excel(), file_name='portfolio_template_v7.8.xlsx', use_container_width=True)
             st.download_button("📥 엑셀 작성 가이드 (PDF)", data=get_guide_pdf(), file_name='포트폴리오 매니저_엑셀작성가이드.pdf', mime='application/pdf', use_container_width=True)
         with col_up:
             st.markdown("**데이터 재업로드**")
@@ -520,7 +541,7 @@ if st.session_state['raw_excel_data'] is not None:
                 is_kr = (row['국가'] == '한국') or is_korean_stock(t)
                 
                 if t == 'KRW': hp, hb = 1.0, qty
-                elif t == 'USD': hp, hb = hist_ex_rate, qty * hist_ex_rate
+                elif t == 'USD': hp, hb = 1.0, qty * hist_ex_rate # [수정] 달러 본질 가격 1.0 반영
                 else:
                     hp = get_hist_price(t, target_date, is_kr)
                     hb = hp * qty if is_kr else hp * qty * hist_ex_rate
@@ -590,11 +611,11 @@ if st.session_state['raw_excel_data'] is not None:
             st.subheader("📋 전체 자산 상세")
             summary_cols = ['계좌명', '종목명', '업종', '국가', '수량', price_col_name, '현재가', '수익률', '평가금액']
             
-            # [포맷팅 개선] 달러/원화 구분을 위한 DataFrame 재생성
-            disp_dashboard_df = all_df_dashboard[summary_cols + ['통화']].copy()
-            disp_dashboard_df[price_col_name] = disp_dashboard_df.apply(lambda r: format_currency_by_row(r[price_col_name], r['통화']), axis=1)
-            disp_dashboard_df['현재가'] = disp_dashboard_df.apply(lambda r: format_currency_by_row(r['현재가'], r['통화']), axis=1)
-            disp_dashboard_df = disp_dashboard_df.drop(columns=['통화'])
+            # [포맷팅 개선] 달러/원화 자동 구별
+            disp_dashboard_df = all_df_dashboard[summary_cols + ['통화', '종목코드']].copy()
+            disp_dashboard_df[price_col_name] = disp_dashboard_df.apply(lambda r: format_price_smart(r[price_col_name], r['종목코드'], r['통화']), axis=1)
+            disp_dashboard_df['현재가'] = disp_dashboard_df.apply(lambda r: format_price_smart(r['현재가'], r['종목코드'], r['통화']), axis=1)
+            disp_dashboard_df = disp_dashboard_df.drop(columns=['통화', '종목코드'])
             
             fmt_dict = {'수량': '{:,.2f}', '수익률': '{:+.2f}%', '평가금액': '{:,.0f}'}
             st.dataframe(
@@ -632,11 +653,10 @@ if st.session_state['raw_excel_data'] is not None:
         
         st.caption(f"📋 {selected_sheet} 보유 종목")
         
-        # [포맷팅 개선] 달러/원화 구분을 위한 DataFrame 재생성
-        disp_target_df = target_df[['종목명', '업종', '수량', price_col_name, '현재가', '수익률', '평가금액', '통화']].copy()
-        disp_target_df[price_col_name] = disp_target_df.apply(lambda r: format_currency_by_row(r[price_col_name], r['통화']), axis=1)
-        disp_target_df['현재가'] = disp_target_df.apply(lambda r: format_currency_by_row(r['현재가'], r['통화']), axis=1)
-        disp_target_df = disp_target_df.drop(columns=['통화'])
+        disp_target_df = target_df[['종목명', '업종', '수량', price_col_name, '현재가', '수익률', '평가금액', '통화', '종목코드']].copy()
+        disp_target_df[price_col_name] = disp_target_df.apply(lambda r: format_price_smart(r[price_col_name], r['종목코드'], r['통화']), axis=1)
+        disp_target_df['현재가'] = disp_target_df.apply(lambda r: format_price_smart(r['현재가'], r['종목코드'], r['통화']), axis=1)
+        disp_target_df = disp_target_df.drop(columns=['통화', '종목코드'])
 
         fmt_dict_tab2 = {'수량': '{:,.2f}', '수익률': '{:+.2f}%', '평가금액': '{:,.0f}'}
         st.dataframe(
@@ -699,23 +719,21 @@ if st.session_state['raw_excel_data'] is not None:
 
         if st.session_state['search_info']:
             inf = st.session_state['search_info']
-            # [포맷팅 개선] 검색 결과 달러/원화 표시
-            p_str = format_currency_by_row(inf['현재가'], inf['currency'])
+            p_str = format_price_smart(inf['현재가'], inf['종목코드'], inf['currency'])
             search_res_df = pd.DataFrame([{'종목코드': inf['종목코드'], '종목명': inf['종목명'], '현재가': p_str}])
             st.dataframe(search_res_df, hide_index=True, use_container_width=True)
             
             st.button("리스트에 추가", key="add_list_btn", on_click=add_sim_item_callback)
 
-        # [포맷팅 개선] 에디터 내 달러/원화 표시를 위한 별도 DataFrame
         sim_disp = sim_df[['종목명', '종목코드', '통화', '현재가', '시뮬레이션 수량']].copy()
-        sim_disp['현재가(표시)'] = sim_disp.apply(lambda x: format_currency_by_row(x['현재가'], x['통화']), axis=1)
+        sim_disp['현재가(표시)'] = sim_disp.apply(lambda x: format_price_smart(x['현재가'], x['종목코드'], x['통화']), axis=1)
 
         edited = st.data_editor(
             sim_disp[['종목명', '종목코드', '현재가(표시)', '시뮬레이션 수량']],
             column_config={
                 "종목명": st.column_config.TextColumn("종목명", disabled=True),
                 "종목코드": st.column_config.TextColumn("코드", disabled=True),
-                "현재가(표시)": st.column_config.TextColumn("현재가", disabled=True), # 문자열이므로 TextColumn 사용
+                "현재가(표시)": st.column_config.TextColumn("현재가", disabled=True),
                 "시뮬레이션 수량": st.column_config.NumberColumn("목표 수량", min_value=0, step=1, format="%.2f")
             },
             use_container_width=True, num_rows="dynamic", key="sim_editor"
@@ -726,6 +744,7 @@ if st.session_state['raw_excel_data'] is not None:
         sim_df['시뮬레이션 수량'] = edited.loc[valid_indices, '시뮬레이션 수량']
         st.session_state['sim_df'] = sim_df
         
+        # [핵심수정] 1.0으로 고정된 달러는 환율을 정상적으로 1번만 곱하게 됨 (제곱 방지)
         def calc_sim_total(row):
             p, q = row['현재가'], row['시뮬레이션 수량']
             return p * q * usd_krw if row['통화'] == 'USD' or row['국가'] == '미국' else p * q
@@ -754,8 +773,7 @@ if st.session_state['raw_excel_data'] is not None:
         
         if not plan_df.empty:
             plan_df['구분'] = plan_df['수량변동'].apply(lambda x: '매수 (BUY)' if x > 0 else '매도 (SELL)')
-            # [포맷팅 개선] 매매 계획표 달러/원화 표시
-            plan_df['현재가_표시'] = plan_df.apply(lambda x: format_currency_by_row(x['현재가'], x['통화']), axis=1)
+            plan_df['현재가_표시'] = plan_df.apply(lambda x: format_price_smart(x['현재가'], x['종목코드'], x['통화']), axis=1)
             
             plan_display = plan_df[['종목명', '종목코드', '현재가_표시', '구분', '수량', '시뮬레이션 수량', '수량변동', '매매금액']].copy()
             plan_display.columns = ['종목명', '코드', '현재가', '구분', '현재수량', '목표수량', '변동수량', '예상 소요금액']
