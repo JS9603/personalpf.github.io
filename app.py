@@ -52,8 +52,8 @@ if 'uploaded_filename' not in st.session_state:
 # 상단 헤더
 col_title, col_time = st.columns([0.7, 0.3])
 with col_title:
-    st.title("🏦 포트폴리오 매니저 v6.8")
-    st.markdown("Final Fix (비교 가능성 추가)")
+    st.title("🏦 포트폴리오 매니저 v6.9")
+    st.markdown("Final Fix (정상화 완료)")
 with col_time:
     kst_timezone = timezone(timedelta(hours=9))
     now_kst = datetime.now(kst_timezone)
@@ -86,11 +86,9 @@ def get_all_exchange_rates():
     except: pass
     return rates
 
-# [NEW] 특정일 과거 환율 조회 캐싱
 @st.cache_data(ttl=3600*24)
 def get_hist_exchange_rate(target_date):
     try:
-        # 휴일일 수 있으므로 일주일 전부터 검색 후 가장 최근 값 사용
         start_str = (target_date - timedelta(days=7)).strftime('%Y-%m-%d')
         end_str = target_date.strftime('%Y-%m-%d')
         df = fdr.DataReader('USD/KRW', start_str, end_str)
@@ -98,7 +96,6 @@ def get_hist_exchange_rate(target_date):
     except: pass
     return 1450.0
 
-# [NEW] 특정일 과거 종가 조회 캐싱
 @st.cache_data(ttl=3600*24)
 def get_hist_price(ticker, target_date, is_kr):
     start_str = (target_date - timedelta(days=10)).strftime('%Y-%m-%d')
@@ -376,7 +373,7 @@ def get_template_excel():
     return output.getvalue()
 
 with st.expander("⬇️ 엑셀 양식 다운로드"):
-    st.download_button(label="엑셀 양식 받기 (.xlsx)", data=get_template_excel(), file_name='portfolio_template_v6.8.xlsx')
+    st.download_button(label="엑셀 양식 받기 (.xlsx)", data=get_template_excel(), file_name='portfolio_template_v6.9.xlsx')
 
 # -----------------------------------------------------------------------------
 # 4. 메인 로직
@@ -423,22 +420,22 @@ if st.session_state['raw_excel_data'] is not None:
     usd_krw = st.session_state['usd_krw']
 
     # ==========================================
-    # 사이드바: 1. 수익률 비교 기준 설정 2. 납입원금 설정
+    # 사이드바: 수익률 비교 기준 설정 (3개 옵션)
     # ==========================================
     with st.sidebar:
-        st.header("📈 수익률 비교 기준 설정")
-        compare_mode = st.radio("비교 기준", ["💰 납입원금 (기본)", "📅 특정일 종가"], index=0)
+        st.header("📈 수익률 비교 기준")
+        compare_mode = st.radio("기준 선택", ["💰 납입원금 기준", "📊 매입원가 기준", "📅 특정기준일 기준"], index=0)
         
         target_date = None
-        if compare_mode == "📅 특정일 종가":
+        if compare_mode == "📅 특정기준일 기준":
             target_date = st.date_input("기준일 선택", value=datetime.today() - timedelta(days=1), max_value=datetime.today())
-            st.caption(f"선택한 날짜({target_date.strftime('%y.%m.%d')})의 종가를 기준으로 수익률을 계산합니다.")
+            st.caption(f"선택한 날짜({target_date.strftime('%y.%m.%d')}) 종가로 수익률 재계산")
             
         st.divider()
         
         st.header("💰 계좌별 납입원금 설정")
-        if compare_mode == "📅 특정일 종가":
-            st.info("💡 현재 특정일 종가 모드입니다. 아래 입력한 납입원금은 '기본' 모드일 때만 수익률 계산에 적용됩니다.")
+        if compare_mode != "💰 납입원금 기준":
+            st.warning("💡 '납입원금 기준'을 선택해야 총 수익률 계산에 아래 금액이 반영됩니다.")
         else:
             st.caption("엑셀에 '납입원금' 열을 추가하면 자동 입력됩니다.")
             
@@ -451,18 +448,18 @@ if st.session_state['raw_excel_data'] is not None:
         st.session_state['user_principals'] = updated_principals
 
     # ==========================================
-    # 비교 모드에 따른 데이터 재가공 로직
+    # 모드별 데이터 재가공 로직
     # ==========================================
     display_dict = {}
     account_base_vals = {}
-    price_col_name = "매수단가" if compare_mode == "💰 납입원금 (기본)" else "기준일종가"
+    price_col_name = "기준일종가" if compare_mode == "📅 특정기준일 기준" else "매수단가"
 
-    with st.spinner("비교 데이터를 불러오는 중입니다..."):
-        hist_ex_rate = get_hist_exchange_rate(target_date) if compare_mode == "📅 특정일 종가" else 1450.0
+    with st.spinner("비교 데이터를 처리하는 중입니다..."):
+        hist_ex_rate = get_hist_exchange_rate(target_date) if compare_mode == "📅 특정기준일 기준" else 1450.0
         
         for sheet, df in portfolio_dict.items():
             new_df = df.copy()
-            if compare_mode == "📅 특정일 종가":
+            if compare_mode == "📅 특정기준일 기준":
                 hist_prices = []
                 hist_bases = []
                 for _, row in new_df.iterrows():
@@ -483,7 +480,13 @@ if st.session_state['raw_excel_data'] is not None:
                 new_df['비교금액'] = hist_bases
                 new_df['수익률'] = new_df.apply(lambda x: ((x['평가금액'] - x['비교금액']) / x['비교금액'] * 100) if x['비교금액'] > 0 else 0, axis=1)
                 account_base_vals[sheet] = sum(hist_bases)
-            else:
+                
+            elif compare_mode == "📊 매입원가 기준":
+                new_df[price_col_name] = new_df['매수단가']
+                new_df['비교금액'] = new_df['매수금액']
+                account_base_vals[sheet] = new_df['매수금액'].sum()
+                
+            else: # "💰 납입원금 기준"
                 new_df[price_col_name] = new_df['매수단가']
                 new_df['비교금액'] = new_df['매수금액']
                 account_base_vals[sheet] = st.session_state['user_principals'].get(sheet, new_df['매수금액'].sum())
@@ -493,12 +496,12 @@ if st.session_state['raw_excel_data'] is not None:
     # --- 퇴직연금/IRP/DC 제외 로직 ---
     HIDDEN_KEYWORDS = ['퇴직연금', 'IRP', 'DC']
     dashboard_dfs = []
-    dashboard_total_principal = 0
+    dashboard_total_base = 0
     
     for name, df in display_dict.items():
         if not any(k in name for k in HIDDEN_KEYWORDS):
             dashboard_dfs.append(df)
-            dashboard_total_principal += account_base_vals[name]
+            dashboard_total_base += account_base_vals[name]
 
     all_df_dashboard = pd.concat(dashboard_dfs, ignore_index=True) if dashboard_dfs else pd.DataFrame() 
     all_df_raw = pd.concat(portfolio_dict.values(), ignore_index=True)
@@ -510,14 +513,16 @@ if st.session_state['raw_excel_data'] is not None:
         st.subheader("🌐 전체 자산 현황 (퇴직연금 제외)")
         if not all_df_dashboard.empty:
             total_eval = all_df_dashboard['평가금액'].sum()
-            total_principal = dashboard_total_principal
-            profit = total_eval - total_principal
-            yield_rate = (profit / total_principal * 100) if total_principal > 0 else 0
+            total_base = dashboard_total_base
+            profit = total_eval - total_base
+            yield_rate = (profit / total_base * 100) if total_base > 0 else 0
             
-            base_label = "총 납입원금" if compare_mode == "💰 납입원금 (기본)" else f"기준 평가액 ({target_date.strftime('%m/%d')})"
+            if compare_mode == "💰 납입원금 기준": base_label = "총 납입원금"
+            elif compare_mode == "📊 매입원가 기준": base_label = "총 매입원가"
+            else: base_label = f"기준 평가액 ({target_date.strftime('%m/%d')})"
             
             m1, m2, m3 = st.columns(3)
-            m1.metric(base_label, f"{total_principal:,.0f} 원")
+            m1.metric(base_label, f"{total_base:,.0f} 원")
             m2.metric("총 평가금액", f"{total_eval:,.0f} 원", f"{profit:+,.0f} 원")
             m3.metric("총 수익률", f"{yield_rate:.2f} %", f"{yield_rate:.2f} %")
             st.divider()
@@ -547,15 +552,17 @@ if st.session_state['raw_excel_data'] is not None:
         selected_sheet = st.selectbox("계좌 선택:", sheet_names)
         target_df = display_dict[selected_sheet]
         
-        sheet_principal = account_base_vals[selected_sheet]
+        sheet_base = account_base_vals[selected_sheet]
         t_eval = target_df['평가금액'].sum()
-        t_profit = t_eval - sheet_principal
-        t_yield = (t_profit / sheet_principal * 100) if sheet_principal > 0 else 0
+        t_profit = t_eval - sheet_base
+        t_yield = (t_profit / sheet_base * 100) if sheet_base > 0 else 0
         
-        base_label = "납입 원금" if compare_mode == "💰 납입원금 (기본)" else f"기준 평가액 ({target_date.strftime('%m/%d')})"
+        if compare_mode == "💰 납입원금 기준": base_label = "계좌 납입원금"
+        elif compare_mode == "📊 매입원가 기준": base_label = "계좌 매입원가"
+        else: base_label = f"기준 평가액 ({target_date.strftime('%m/%d')})"
         
         m1, m2, m3 = st.columns(3)
-        m1.metric(base_label, f"{sheet_principal:,.0f} 원")
+        m1.metric(base_label, f"{sheet_base:,.0f} 원")
         m2.metric("계좌 평가금액", f"{t_eval:,.0f} 원", f"{t_profit:+,.0f} 원")
         m3.metric("계좌 수익률", f"{t_yield:.2f} %", f"{t_yield:.2f} %")
         st.divider()
@@ -573,7 +580,7 @@ if st.session_state['raw_excel_data'] is not None:
             use_container_width=True, hide_index=True
         )
 
-    # --- [TAB 3] 시뮬레이션 (원본 portfolio_dict 기반) ---
+    # --- [TAB 3] 시뮬레이션 ---
     with tab3:
         st.header("🎛️ 리밸런싱 시뮬레이션")
         sim_sheets = list(portfolio_dict.keys())
@@ -594,10 +601,10 @@ if st.session_state['raw_excel_data'] is not None:
                 opt = f"{k} ({v['code']})"
                 if opt not in search_options: search_options.append(opt)
             
-            search_mode = st.radio("검색 방식 선택", ["📝 리스트에서 검색 (국내 종목/ETF 자동완성)", "⌨️ 직접 입력 (해외 종목/코드 입력)"], horizontal=True)
+            search_mode_ui = st.radio("검색 방식 선택", ["📝 리스트에서 검색 (국내 종목/ETF 자동완성)", "⌨️ 직접 입력 (해외 종목/코드 입력)"], horizontal=True)
             ac1, ac2 = st.columns([3, 1])
             
-            if "리스트" in search_mode:
+            if "리스트" in search_mode_ui:
                 input_val = ac1.selectbox("종목을 선택하세요 (타이핑하여 검색 가능)", [""] + search_options, index=0)
             else:
                 input_val = ac1.text_input("종목명 또는 티커(코드) 직접 입력", placeholder="예: TSLA, AAPL, 005930")
@@ -606,7 +613,7 @@ if st.session_state['raw_excel_data'] is not None:
                 if not input_val: st.error("종목을 선택하거나 입력해주세요.")
                 else:
                     search_target = input_val
-                    if "리스트" in search_mode:
+                    if "리스트" in search_mode_ui:
                         match = re.search(r'\((.*?)\)$', input_val)
                         if match: search_target = match.group(1)
                             
@@ -641,7 +648,6 @@ if st.session_state['raw_excel_data'] is not None:
             use_container_width=True, num_rows="dynamic", key="sim_editor"
         )
         
-        # [수정] 행 삭제 완벽 반영: 데이터 에디터에서 발생한 '행 삭제'를 원본 sim_df에 동기화
         valid_indices = edited.index.intersection(sim_df.index)
         sim_df = sim_df.loc[valid_indices].copy()
         sim_df['시뮬레이션 수량'] = edited.loc[valid_indices, '시뮬레이션 수량']
