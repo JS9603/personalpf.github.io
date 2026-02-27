@@ -41,11 +41,18 @@ if 'sim_df' not in st.session_state:
 if 'user_principals' not in st.session_state:
     st.session_state['user_principals'] = {}
 
+# [수정] 엑셀 원본 데이터(백데이터) 유지를 위한 세션 추가
+if 'raw_excel_data' not in st.session_state:
+    st.session_state['raw_excel_data'] = None
+
+if 'uploaded_filename' not in st.session_state:
+    st.session_state['uploaded_filename'] = None
+
 # 상단 헤더
 col_title, col_time = st.columns([0.7, 0.3])
 with col_title:
-    st.title("🏦 포트폴리오 매니저 v6.0")
-    st.markdown("최적화 패치")
+    st.title("🏦 포트폴리오 매니저 v6.1")
+    st.markdown("Final Fix (즉시 갱신시 데이터보존)")
 with col_time:
     # 한국 시간(KST) 설정
     kst_timezone = timezone(timedelta(hours=9))
@@ -339,18 +346,27 @@ def get_template_excel():
     return output.getvalue()
 
 with st.expander("⬇️ 엑셀 양식 다운로드"):
-    st.download_button(label="엑셀 양식 받기 (.xlsx)", data=get_template_excel(), file_name='portfolio_template_v6.0.xlsx')
+    st.download_button(label="엑셀 양식 받기 (.xlsx)", data=get_template_excel(), file_name='portfolio_template_v6.1.xlsx')
 
 # -----------------------------------------------------------------------------
 # 4. 메인 로직
 # -----------------------------------------------------------------------------
 uploaded_file = st.file_uploader("📂 엑셀 파일을 업로드하세요", type=['xlsx'])
 
+# [수정] 엑셀 파일을 새로 업로드 했을 때만 세션(원본 데이터) 갱신
 if uploaded_file is not None:
+    if st.session_state['uploaded_filename'] != uploaded_file.name:
+        st.session_state['raw_excel_data'] = pd.read_excel(uploaded_file, sheet_name=None)
+        st.session_state['uploaded_filename'] = uploaded_file.name
+        st.session_state['portfolio_data'] = None  # 새 파일 업로드 시 포트폴리오 재계산 트리거
+
+# [수정] 위젯이 비워져도 세션에 백데이터가 존재하면 로직을 계속 실행
+if st.session_state['raw_excel_data'] is not None:
     if st.session_state['portfolio_data'] is None:
         try:
             usd_krw = get_exchange_rate()
-            xls = pd.read_excel(uploaded_file, sheet_name=None)
+            # 업로드된 파일 변수 대신 세션에 캐싱된 원본 데이터를 사용
+            xls = st.session_state['raw_excel_data']
             
             processed_data = {}
             excel_principals = {}
@@ -466,7 +482,7 @@ if uploaded_file is not None:
         else:
             st.info("통합 대시보드에 표시할 계좌가 없습니다. (모든 계좌가 숨김 처리되었거나 데이터가 없습니다.)")
 
-    # --- [TAB 2] 계좌별 상세 (업종 차트 추가됨) ---
+    # --- [TAB 2] 계좌별 상세 (업종 차트 포함) ---
     with tab2:
         sheet_names = list(portfolio_dict.keys())
         selected_sheet = st.selectbox("계좌 선택:", sheet_names)
@@ -484,7 +500,6 @@ if uploaded_file is not None:
         m3.metric("계좌 수익률", f"{t_yield:.2f} %", f"{t_yield:.2f} %")
         st.divider()
         
-        # [수정] 3개 컬럼으로 분할하여 업종 차트 추가
         c1, c2, c3 = st.columns(3)
         with c1: st.plotly_chart(create_pie(target_df, '종목명', "1. 종목 비중"), use_container_width=True, key='t2_c1')
         with c2: st.plotly_chart(create_pie(target_df, '업종', "2. 업종(섹터) 비중"), use_container_width=True, key='t2_c2_new')
