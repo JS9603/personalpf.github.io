@@ -22,7 +22,6 @@ refresh_count = st_autorefresh(interval=5 * 60 * 1000, key="data_refresh")
 if 'portfolio_data' not in st.session_state:
     st.session_state['portfolio_data'] = None
 
-# 자동 갱신 감지 로직
 if 'last_refresh_count' not in st.session_state:
     st.session_state['last_refresh_count'] = 0
 
@@ -50,34 +49,26 @@ if 'uploaded_filename' not in st.session_state:
     st.session_state['uploaded_filename'] = None
 
 # -----------------------------------------------------------------------------
-# [디자인 개선] 상단 헤더 배너 영역
+# [디자인 개편] 상단 타이틀 배너
 # -----------------------------------------------------------------------------
-col_title, col_time = st.columns([0.7, 0.3])
+col_title, col_time = st.columns([0.75, 0.25])
 with col_title:
-    st.markdown("""
-        <div style="display: flex; flex-direction: column; justify-content: center; height: 100%; padding-top: 10px;">
-            <h1 style="margin: 0; padding: 0; font-size: 2.2rem;">🏦 포트폴리오 매니저 v7.1</h1>
-            <p style="color: #636e72; font-size: 1.05rem; margin: 5px 0 0 0;">정상화 완료</p>
-        </div>
-    """, unsafe_allow_html=True)
+    st.title("🏦 Portfolio Manager v7.2")
+    st.markdown("##### ✨ 정상화 완료")
 with col_time:
     kst_timezone = timezone(timedelta(hours=9))
     now_kst = datetime.now(kst_timezone)
     now_str = now_kst.strftime("%Y-%m-%d %H:%M:%S")
-    
-    st.markdown(f"""
-        <div style="text-align: right; color: #636e72; font-size: 0.85rem; margin-bottom: 8px; margin-top: 15px;">
-            🕒 최종 갱신(KST): {now_str}
-        </div>
-    """, unsafe_allow_html=True)
-    if st.button("🔄 최신 시세로 즉시 갱신", use_container_width=True):
+    st.write("") # 간격 맞춤
+    st.caption(f"🕒 시스템 갱신 시간 (KST): {now_str}")
+    if st.button("🔄 최신 시세로 즉시 갱신", use_container_width=True, type="primary"):
         st.session_state['portfolio_data'] = None
         st.rerun()
 
-st.markdown("<hr style='margin-top: 10px; margin-bottom: 20px;'/>", unsafe_allow_html=True)
+st.divider()
 
 # -----------------------------------------------------------------------------
-# 2. 데이터 처리 및 검색 함수 (네이버 파이낸스 직접 연결)
+# 2. 데이터 처리 및 검색 함수
 # -----------------------------------------------------------------------------
 
 @st.cache_data(ttl=60)
@@ -373,7 +364,7 @@ def calculate_portfolio(df, usd_krw):
     return df
 
 # -----------------------------------------------------------------------------
-# 3. 엑셀 다운로드
+# 3. 엑셀 양식 제공
 # -----------------------------------------------------------------------------
 def get_template_excel():
     output = io.BytesIO()
@@ -383,19 +374,50 @@ def get_template_excel():
         pd.DataFrame({'종목코드': ['005930', '0072R0'], '종목명': ['삼성전자', 'TIGER KRX금현물'], '업종': ['반도체', '원자재'], '국가': ['한국', '한국'], '수량': [100, 50], '매수단가': [60000, 12000], '납입원금': [6000000, 0]}).to_excel(writer, index=False, sheet_name='퇴직연금(IRP)')
     return output.getvalue()
 
-with st.expander("⬇️ 엑셀 양식 다운로드"):
-    st.download_button(label="엑셀 양식 받기 (.xlsx)", data=get_template_excel(), file_name='portfolio_template_v7.1.xlsx')
+# -----------------------------------------------------------------------------
+# [디자인 개편] 4. 파일 업로드 및 데이터 로딩 UI 
+# -----------------------------------------------------------------------------
+uploaded_file = None
+
+if st.session_state['portfolio_data'] is None and st.session_state['raw_excel_data'] is None:
+    # 💡 초기 화면: 대시보드 대신 깔끔한 시작 가이드(Onboarding) 화면 제공
+    st.markdown("### 🚀 자산 포트폴리오 관리 시작하기")
+    
+    col_dl, col_up = st.columns([1, 1.5])
+    with col_dl:
+        st.info("💡 **Step 1.** 처음이신가요?\n\n엑셀 양식을 다운로드하여 보유 자산을 입력하세요.")
+        st.download_button(
+            label="📄 표준 엑셀 양식 다운로드", 
+            data=get_template_excel(), 
+            file_name='portfolio_template_v7.2.xlsx', 
+            use_container_width=True
+        )
+    with col_up:
+        st.success("💡 **Step 2.** 데이터 업로드\n\n작성하신 엑셀 파일을 아래에 드래그하여 업로드하세요.")
+        uploaded_file = st.file_uploader("엑셀 파일 업로드", type=['xlsx'], label_visibility="collapsed")
+    
+    if uploaded_file is None:
+        st.stop() # 업로드 전까지 대시보드 숨김
+else:
+    # 💡 대시보드 상태: 거추장스러운 업로드 창을 얇은 Expander로 쏙 숨김
+    with st.expander("📁 데이터 파일 재업로드 및 양식 다운로드"):
+        col_dl, col_up = st.columns([1, 1.5])
+        with col_dl:
+            st.markdown("**양식 다운로드**")
+            st.download_button("📄 표준 엑셀 양식 받기", data=get_template_excel(), file_name='portfolio_template_v7.2.xlsx', use_container_width=True)
+        with col_up:
+            st.markdown("**데이터 재업로드**")
+            uploaded_file = st.file_uploader("새로운 엑셀 파일 업로드", type=['xlsx'], label_visibility="collapsed")
 
 # -----------------------------------------------------------------------------
-# 4. 메인 로직
+# 파일 업로드 감지 로직
 # -----------------------------------------------------------------------------
-uploaded_file = st.file_uploader("📂 엑셀 파일을 업로드하세요", type=['xlsx'])
-
 if uploaded_file is not None:
     if st.session_state['uploaded_filename'] != uploaded_file.name:
         st.session_state['raw_excel_data'] = pd.read_excel(uploaded_file, sheet_name=None)
         st.session_state['uploaded_filename'] = uploaded_file.name
         st.session_state['portfolio_data'] = None 
+        st.rerun() # 파일 업로드 시 즉시 리프레시하여 대시보드 렌더링
 
 if st.session_state['raw_excel_data'] is not None:
     if st.session_state['portfolio_data'] is None:
@@ -406,7 +428,7 @@ if st.session_state['raw_excel_data'] is not None:
             processed_data = {}
             excel_principals = {}
 
-            with st.spinner(f'데이터 갱신 중... (환율: {usd_krw:,.2f}원)'):
+            with st.spinner(f'데이터 계산 및 최신 주가 연동 중... (환율: {usd_krw:,.2f}원)'):
                 for sheet_name, df_sheet in xls.items():
                     required = ['종목코드', '종목명', '수량', '매수단가']
                     if not all(col in df_sheet.columns for col in required): continue
@@ -605,7 +627,7 @@ if st.session_state['raw_excel_data'] is not None:
         sim_df = st.session_state['sim_df']
         cur_total = portfolio_dict[sel_sim_sheet]['평가금액'].sum()
 
-        # [복구 및 디자인 수정] 라디오 버튼 + 드롭다운 완벽 원상복구
+        # [원상복구] 시뮬레이션 종목 검색창 (사용자가 가장 편해했던 기존 UI)
         with st.expander("➕ 종목 추가하기 (검색 및 자동완성)"):
             krx_map = get_korean_market_map()
             search_options = [f"{k} ({v})" for k, v in CUSTOM_STOCK_MAP.items()]
@@ -715,6 +737,3 @@ if st.session_state['raw_excel_data'] is not None:
     # --- [TAB 4] 원본 데이터 ---
     with tab4:
         st.dataframe(all_df_raw)
-
-else:
-    st.info("👆 엑셀 파일을 업로드해주세요.")
