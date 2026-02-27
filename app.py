@@ -4,10 +4,9 @@ import yfinance as yf
 import plotly.express as px
 import io
 import re
-import requests
-import urllib.parse
 from datetime import datetime, timedelta, timezone
 import FinanceDataReader as fdr
+import time
 from streamlit_autorefresh import st_autorefresh
 
 # -----------------------------------------------------------------------------
@@ -39,9 +38,11 @@ if 'sim_target_sheet' not in st.session_state:
 if 'sim_df' not in st.session_state:
     st.session_state['sim_df'] = None
 
+# 납입원금 저장을 위한 세션
 if 'user_principals' not in st.session_state:
     st.session_state['user_principals'] = {}
 
+# 엑셀 원본 데이터(백데이터) 유지를 위한 세션
 if 'raw_excel_data' not in st.session_state:
     st.session_state['raw_excel_data'] = None
 
@@ -51,9 +52,10 @@ if 'uploaded_filename' not in st.session_state:
 # 상단 헤더
 col_title, col_time = st.columns([0.7, 0.3])
 with col_title:
-    st.title("🏦 포트폴리오 매니저 v6.5")
+    st.title("🏦 포트폴리오 매니저 v6.6")
     st.markdown("Final Fix (시뮬레이션 검색 안정화)")
 with col_time:
+    # 한국 시간(KST) 설정
     kst_timezone = timezone(timedelta(hours=9))
     now_kst = datetime.now(kst_timezone)
     now_str = now_kst.strftime("%Y-%m-%d %H:%M:%S")
@@ -65,7 +67,7 @@ with col_time:
         st.rerun()
 
 # -----------------------------------------------------------------------------
-# 2. 데이터 처리 및 검색 함수 (네이버 파이낸스 직접 연결)
+# 2. 데이터 처리 및 검색 함수
 # -----------------------------------------------------------------------------
 
 @st.cache_data(ttl=60)
@@ -85,6 +87,42 @@ def get_all_exchange_rates():
     except: pass
     return rates
 
+# [수정] 3중 백업이 적용된 최강력 국내 종목 맵핑 함수 (이름, 코드, 업종 모두 가져옴)
+@st.cache_data(ttl=3600*12)
+def get_korean_market_map():
+    market_data = {}
+    
+    def add_to_map(df, default_sector="기타"):
+        if df is None or df.empty: return
+        code_col = 'Code' if 'Code' in df.columns else ('Symbol' if 'Symbol' in df.columns else None)
+        name_col = 'Name'
+        sector_col = 'Sector' if 'Sector' in df.columns else None
+        
+        if not code_col or not name_col: return
+        
+        for _, row in df.iterrows():
+            name = str(row[name_col]).strip()
+            code = str(row[code_col]).strip()
+            sector = str(row[sector_col]).strip() if sector_col and pd.notna(row[sector_col]) else default_sector
+            market_data[name] = {'code': code, 'sector': sector}
+
+    # 1. KOSPI & KOSDAQ 개별 로드 (KRX 통합로드가 터지는 것을 방지)
+    try:
+        add_to_map(fdr.StockListing('KOSPI'))
+        add_to_map(fdr.StockListing('KOSDAQ'))
+    except:
+        try:
+            add_to_map(fdr.StockListing('KRX'))
+        except: pass
+        
+    # 2. 국내 ETF 로드
+    try:
+        add_to_map(fdr.StockListing('ETF/KR'), default_sector="ETF")
+    except: pass
+        
+    return market_data
+
+# TIGER KRX금현물(0072R0) 등 특수 종목 매핑
 CUSTOM_STOCK_MAP = {
     '애플': 'AAPL', '마이크로소프트': 'MSFT', '테슬라': 'TSLA', '엔비디아': 'NVDA',
     '구글': 'GOOGL', '아마존': 'AMZN', '메타': 'META', '넷플릭스': 'NFLX',
@@ -95,7 +133,21 @@ CUSTOM_STOCK_MAP = {
     'IAU': 'IAU', '금': 'IAU', '골드': 'IAU', 'GLD': 'GLD',
     'TIGER KRX금현물': '0072R0', '금현물': '0072R0', 'KRX금': '0072R0'
 }
-TICKER_TO_KOREAN = {v: k for k, v in CUSTOM_STOCK_MAP.items()}
+
+def resolve_ticker(input_str):
+    input_str = str(input_str).strip()
+    
+    # 1. 커스텀 맵 확인
+    for k, v in CUSTOM_STOCK_MAP.items():
+        if input_str.upper() == k.upper():
+            return v
+            
+    # 2. 한국 종목 이름 -> 코드 변환
+    krx_map = get_korean_market_map()
+    if input_str in krx_map:
+        return krx_map[input_str]['code']
+        
+    return input_str.upper()
 
 def is_korean_stock(ticker):
     ticker = str(ticker).strip().upper()
@@ -105,128 +157,93 @@ def is_korean_stock(ticker):
         return True
     return False
 
-# [NEW] 네이버 검색 API를 통한 완벽한 종목코드 검색
-def resolve_ticker_naver(input_str):
-    input_str = str(input_str).strip()
+def get_current_price(ticker):
+    ticker = str(ticker).strip().upper()
     
-    # 1. 커스텀 맵 검사
-    if input_str.upper() in CUSTOM_STOCK_MAP:
-        return CUSTOM_STOCK_MAP[input_str.upper()]
-    for k, v in CUSTOM_STOCK_MAP.items():
-        if input_str.upper() == k.upper(): return v
-            
-    # 2. 이미 6자리 코드면 그대로 반환
-    if len(input_str) == 6 and input_str[0].isdigit():
-        return input_str
-        
-    # 3. 네이버 파이낸스 자동완성 API 강제 검색 (삼성전자 -> 005930 완벽 추출)
     try:
-        query = urllib.parse.quote(input_str.encode('euc-kr'))
-        url = f"https://ac.finance.naver.com/ac?q={query}&q_enc=euc-kr&st=111&r_format=json&t_koreng=1"
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-        res = requests.get(url, headers=headers, timeout=3)
-        items = res.json().get('items', [[]])[0]
-        if items:
-            return items[0][1] # 검색된 첫번째 종목의 코드를 반환
-    except:
-        pass
-        
-    return input_str.upper()
+        # 1. 한국 주식 (3중 철통 방어)
+        if is_korean_stock(ticker):
+            clean_code = ticker.split('.')[0]
+            
+            # 1차: FDR
+            try:
+                df = fdr.DataReader(clean_code)
+                if not df.empty: return float(df['Close'].iloc[-1])
+            except: pass
+            
+            # 2차: Yahoo Finance (.KS)
+            try:
+                hist = yf.Ticker(f"{clean_code}.KS").history(period="1d")
+                if not hist.empty: return float(hist['Close'].iloc[-1])
+            except: pass
+            
+            # 3차: Yahoo Finance (.KQ)
+            try:
+                hist = yf.Ticker(f"{clean_code}.KQ").history(period="1d")
+                if not hist.empty: return float(hist['Close'].iloc[-1])
+            except: pass
 
-# [NEW] 네이버 파이낸스 웹페이지 직접 크롤링 (정확한 이름, 가격, 섹터 100% 보장)
-@st.cache_data(ttl=60)
-def get_naver_stock_info(code):
-    try:
-        url = f"https://finance.naver.com/item/main.naver?code={code}"
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-        res = requests.get(url, headers=headers, timeout=5)
-        res.raise_for_status()
-        text = res.text
-        
-        # 1. 이름 추출 (정확한 한글명)
-        name = code
-        name_match = re.search(r'<div class="wrap_company">\s*<h2>.*?<a[^>]*>(.*?)</a>', text, re.IGNORECASE | re.DOTALL)
-        if name_match: 
-            name = name_match.group(1).strip()
+            return 0.0
+
+        # 2. 해외 주식
+        ticker_obj = yf.Ticker(ticker)
+        hist = ticker_obj.history(period="1d")
+        if not hist.empty:
+            return float(hist['Close'].iloc[-1])
             
-        # 2. 현재가 추출
-        price = 0
-        price_match = re.search(r'<dd>현재가\s+([\d,]+)', text)
-        if price_match:
-            price = int(price_match.group(1).replace(',', ''))
-        else:
-            p_match = re.search(r'<p class="no_today">.*?<span class="blind">([\d,]+)</span>', text, re.IGNORECASE | re.DOTALL)
-            if p_match: price = int(p_match.group(1).replace(',', ''))
-                
-        # 3. 업종 추출
-        sector = '기타'
-        sector_match = re.search(r'<dt><span class="blind">업종</span></dt>\s*<dd>(.*?)</dd>', text, re.IGNORECASE | re.DOTALL)
-        if sector_match:
-            sector = re.sub(r'<[^>]+>', '', sector_match.group(1)).strip()
-            
-        if price > 0:
-            return {"name": name, "price": price, "sector": sector}
+        return 0.0
     except:
-        pass
-    return None
+        return 0.0
 
 def get_stock_info_safe(input_str):
-    # 엔진 교체: 네이버 검색으로 코드 확보
-    ticker = resolve_ticker_naver(str(input_str))
+    ticker = resolve_ticker(str(input_str))
+    krx_map = get_korean_market_map()
+    code_to_name = {v['code']: k for k, v in krx_map.items()}
+    code_to_sector = {v['code']: v['sector'] for k, v in krx_map.items()}
     
     try:
+        price = get_current_price(ticker)
+        if price == 0: return None
+        
         is_korean = is_korean_stock(ticker)
         country = '한국' if is_korean else '미국'
         currency = 'KRW' if is_korean else 'USD'
 
+        name = ticker 
+        sector = '기타'
+        asset_type = '기타'
+        clean_code = ticker.split('.')[0]
+
         if is_korean:
-            clean_code = ticker.split('.')[0]
-            # [핵심] 네이버 파이낸스에서 이름, 가격, 섹터 한방에 가져오기
-            naver_info = get_naver_stock_info(clean_code)
-            
-            if naver_info:
-                name = naver_info['name']
-                price = naver_info['price']
-                sector = naver_info['sector']
-                
-                etf_keywords = ['ETF', 'ETN', 'KODEX', 'TIGER', 'ACE', 'SOL', 'ARIRANG', 'KBSTAR', 'HANARO', 'KOSEF', '금현물', 'RISE']
-                asset_type = 'ETF' if any(k in name.upper() for k in etf_keywords) else '개별주식'
-                
-                return {
-                    '종목코드': clean_code, 
-                    '종목명': name,
-                    '업종': sector, 
-                    '현재가': price,
-                    '국가': country,
-                    '유형': asset_type,
-                    'currency': currency
-                }
+            if clean_code in code_to_name:
+                name = code_to_name[clean_code]
+                sector = code_to_sector.get(clean_code, '기타')
             else:
-                return None # 네이버에서조차 실패하면 유효하지 않은 종목임
+                for k, v in CUSTOM_STOCK_MAP.items():
+                    if v == clean_code: name = k
         else:
-            # 해외 주식은 기존 야후 파이낸스 유지
-            ticker_obj = yf.Ticker(ticker)
-            hist = ticker_obj.history(period="1d")
-            if hist.empty: return None
-            
-            price = hist['Close'].iloc[-1]
-            info = ticker_obj.info
-            name = info.get('shortName', ticker)
-            if ticker in TICKER_TO_KOREAN:
-                name = TICKER_TO_KOREAN[ticker]
-                
-            sector = info.get('sector', '기타')
-            asset_type = 'ETF' if info.get('quoteType') == 'ETF' else '개별주식'
-            
-            return {
-                '종목코드': ticker, 
-                '종목명': name,
-                '업종': sector, 
-                '현재가': price,
-                '국가': country,
-                '유형': asset_type,
-                'currency': currency
-            }
+            try:
+                info = yf.Ticker(ticker).info
+                name = info.get('shortName', ticker)
+                sector = info.get('sector', '기타')
+                asset_type = 'ETF' if info.get('quoteType') == 'ETF' else '개별주식'
+            except: pass
+            for k, v in CUSTOM_STOCK_MAP.items():
+                if v == ticker: name = k
+
+        if is_korean:
+            etf_keywords = ['ETF', 'ETN', 'KODEX', 'TIGER', 'ACE', 'SOL', 'ARIRANG', 'KBSTAR', 'HANARO', 'KOSEF', '금현물', 'RISE']
+            asset_type = 'ETF' if any(k in name.upper() for k in etf_keywords) else '개별주식'
+
+        return {
+            '종목코드': ticker, 
+            '종목명': name,
+            '업종': sector, 
+            '현재가': price,
+            '국가': country,
+            '유형': asset_type,
+            'currency': currency
+        }
     except:
         return None
 
@@ -256,49 +273,52 @@ def color_profit(val):
 
 def calculate_portfolio(df, usd_krw):
     current_prices, eval_values, buy_values, currencies = [], [], [], []
+    krx_map = get_korean_market_map()
+    code_to_name = {v['code']: k for k, v in krx_map.items()}
 
     for index, row in df.iterrows():
         raw_ticker = str(row['종목코드']).strip()
         ticker = raw_ticker.upper()
+        
         current_name = str(row.get('종목명', ''))
         clean_code = ticker.split('.')[0]
         
+        if not current_name or current_name == 'nan':
+            if clean_code in code_to_name:
+                df.at[index, '종목명'] = code_to_name[clean_code]
+            else:
+                for k, v in CUSTOM_STOCK_MAP.items():
+                    if v == ticker: df.at[index, '종목명'] = k
+
         qty = float(row['수량'])
         avg_price = float(row['매수단가'])
         country = str(row.get('국가', '')).strip()
 
-        is_kr_stock = (country == '한국') or is_korean_stock(ticker)
-        price = 0.0
-        currency = 'KRW' if is_kr_stock else 'USD'
-
         if ticker == 'KRW':
             price = 1.0
-            eval_val, buy_val = qty, qty * avg_price
+            eval_val = qty
+            buy_val = qty * avg_price
             currency = 'KRW'
         elif ticker == 'USD':
             price = usd_krw
-            currency = 'USD'
             eval_val = qty * usd_krw
-            buy_val = (qty * avg_price * usd_krw) if avg_price < 50 else (qty * avg_price)
-        elif is_kr_stock:
-            # 네이버 엔진으로 정확한 데이터 병합
-            n_info = get_naver_stock_info(clean_code)
-            if n_info:
-                price = n_info['price']
-                if not current_name or current_name == 'nan' or current_name.isdigit():
-                    df.at[index, '종목명'] = n_info['name']
-                if '업종' not in df.columns or df.at[index, '업종'] == '기타':
-                    df.at[index, '업종'] = n_info['sector']
-            eval_val, buy_val = price * qty, avg_price * qty
-            currency = 'KRW'
-        else:
-            # 미국 주식
-            hist = yf.Ticker(ticker).history(period="1d")
-            if not hist.empty: price = hist['Close'].iloc[-1]
-            if not current_name or current_name == 'nan' or current_name == ticker:
-                df.at[index, '종목명'] = TICKER_TO_KOREAN.get(ticker, ticker)
-            eval_val, buy_val = price * qty * usd_krw, avg_price * qty * usd_krw
+            if avg_price < 50: 
+                buy_val = qty * avg_price * usd_krw 
+            else:
+                buy_val = qty * avg_price
             currency = 'USD'
+        else:
+            price = get_current_price(ticker)
+            is_kr_stock = (country == '한국') or is_korean_stock(ticker)
+            
+            if is_kr_stock:
+                eval_val = price * qty
+                buy_val = avg_price * qty
+                currency = 'KRW'
+            else:
+                eval_val = price * qty * usd_krw
+                buy_val = avg_price * qty * usd_krw
+                currency = 'USD'
         
         current_prices.append(price)
         eval_values.append(eval_val)
@@ -358,7 +378,7 @@ def get_template_excel():
     return output.getvalue()
 
 with st.expander("⬇️ 엑셀 양식 다운로드"):
-    st.download_button(label="엑셀 양식 받기 (.xlsx)", data=get_template_excel(), file_name='portfolio_template_v6.5.xlsx')
+    st.download_button(label="엑셀 양식 받기 (.xlsx)", data=get_template_excel(), file_name='portfolio_template_v6.6.xlsx')
 
 # -----------------------------------------------------------------------------
 # 4. 메인 로직
@@ -535,17 +555,37 @@ if st.session_state['raw_excel_data'] is not None:
         sim_df = st.session_state['sim_df']
         cur_total = portfolio_dict[sel_sim_sheet]['평가금액'].sum()
 
-        with st.expander("➕ 종목 추가하기 (네이버 파이낸스 직접 검색)"):
+        # --- [복구됨] 드롭다운(자동완성) 검색 UI ---
+        with st.expander("➕ 종목 추가하기 (검색 및 자동완성)"):
+            # 리스트 옵션 생성
+            krx_map = get_korean_market_map()
+            search_options = [f"{k} ({v})" for k, v in CUSTOM_STOCK_MAP.items()]
+            for k, v in krx_map.items():
+                opt = f"{k} ({v['code']})"
+                if opt not in search_options:
+                    search_options.append(opt)
+            
+            search_mode = st.radio("검색 방식 선택", ["📝 리스트에서 검색 (국내 종목/ETF 자동완성)", "⌨️ 직접 입력 (해외 종목/코드 입력)"], horizontal=True)
+            
             ac1, ac2 = st.columns([3, 1])
             
-            # [수정] 혼란을 주던 드롭다운 대신 심플하고 초강력한 네이버 텍스트 검색창 제공
-            input_val = ac1.text_input("종목명 또는 티커(코드) 입력", placeholder="예: 삼성전자, 한화에어로스페이스, 005930, TSLA")
+            if "리스트" in search_mode:
+                input_val = ac1.selectbox("종목을 선택하세요 (타이핑하여 검색 가능)", [""] + search_options, index=0)
+            else:
+                input_val = ac1.text_input("종목명 또는 티커(코드) 직접 입력", placeholder="예: TSLA, AAPL, 005930")
                 
             if ac2.button("검색"):
                 if not input_val:
-                    st.error("종목을 입력해주세요.")
+                    st.error("종목을 선택하거나 입력해주세요.")
                 else:
-                    info = get_stock_info_safe(input_val)
+                    search_target = input_val
+                    # 드롭다운 선택 시 괄호 안의 코드만 정밀 추출
+                    if "리스트" in search_mode:
+                        match = re.search(r'\((.*?)\)$', input_val)
+                        if match:
+                            search_target = match.group(1)
+                            
+                    info = get_stock_info_safe(search_target)
                     if info: 
                         st.session_state['search_info'] = info
                     else: 
