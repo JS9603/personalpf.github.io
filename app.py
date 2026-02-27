@@ -53,14 +53,15 @@ if 'uploaded_filename' not in st.session_state:
 # -----------------------------------------------------------------------------
 col_title, col_time = st.columns([0.75, 0.25])
 with col_title:
-    st.title("🏦 Portfolio Manager v7.4")
-    st.markdown("##### ✨ 깡통 정상화")
+    st.title("🏦 Portfolio Manager v7.5")
+    st.markdown("##### ✨ 버그픽스(2/27 17:30)")
 with col_time:
     kst_timezone = timezone(timedelta(hours=9))
     now_kst = datetime.now(kst_timezone)
     now_str = now_kst.strftime("%Y-%m-%d %H:%M:%S")
-    st.write("") # 간격 맞춤
+    st.write("") 
     st.caption(f"🕒 시스템 갱신 시간 (KST): {now_str}")
+    # 전역 새로고침 버튼만 rerun 허용
     if st.button("🔄 최신 시세로 즉시 갱신", use_container_width=True, type="primary"):
         st.session_state['portfolio_data'] = None
         st.rerun()
@@ -379,7 +380,6 @@ def get_guide_pdf():
         with open("포트폴리오 매니저_엑셀작성가이드.pdf", "rb") as f:
             return f.read()
     except FileNotFoundError:
-        # [오류수정] 한글 문자가 포함된 경우 바이트 리터럴 b"" 대신 encode() 사용
         return "PDF 파일이 깃허브 저장소에 없습니다. 파일명(포트폴리오 매니저_엑셀작성가이드.pdf)을 확인해주세요.".encode('utf-8')
 
 # -----------------------------------------------------------------------------
@@ -396,7 +396,7 @@ if st.session_state['portfolio_data'] is None and st.session_state['raw_excel_da
         st.download_button(
             label="📄 표준 엑셀 양식 다운로드", 
             data=get_template_excel(), 
-            file_name='portfolio_template_v7.4.xlsx', 
+            file_name='portfolio_template_v7.5.xlsx', 
             use_container_width=True
         )
         st.download_button(
@@ -417,7 +417,7 @@ else:
         col_dl, col_up = st.columns([1, 1.5])
         with col_dl:
             st.markdown("**양식 및 가이드 다운로드**")
-            st.download_button("📄 표준 엑셀 양식 받기", data=get_template_excel(), file_name='portfolio_template_v7.4.xlsx', use_container_width=True)
+            st.download_button("📄 표준 엑셀 양식 받기", data=get_template_excel(), file_name='portfolio_template_v7.5.xlsx', use_container_width=True)
             st.download_button("📥 엑셀 작성 가이드 (PDF)", data=get_guide_pdf(), file_name='포트폴리오 매니저_엑셀작성가이드.pdf', mime='application/pdf', use_container_width=True)
         with col_up:
             st.markdown("**데이터 재업로드**")
@@ -431,7 +431,7 @@ if uploaded_file is not None:
         st.session_state['raw_excel_data'] = pd.read_excel(uploaded_file, sheet_name=None)
         st.session_state['uploaded_filename'] = uploaded_file.name
         st.session_state['portfolio_data'] = None 
-        st.rerun()
+        st.rerun() # 파일 신규 업로드 시에만 명시적 rerun 허용
 
 if st.session_state['raw_excel_data'] is not None:
     if st.session_state['portfolio_data'] is None:
@@ -596,7 +596,8 @@ if st.session_state['raw_excel_data'] is not None:
     # --- [TAB 2] 계좌별 상세 ---
     with tab2:
         sheet_names = list(display_dict.keys())
-        selected_sheet = st.selectbox("계좌 선택:", sheet_names)
+        # [핵심수정] 위젯 키(Key)를 고정하여 탭 초기화 방지
+        selected_sheet = st.selectbox("계좌 선택:", sheet_names, key="tab2_sheet_selector")
         target_df = display_dict[selected_sheet]
         
         sheet_base = account_base_vals[selected_sheet]
@@ -631,17 +632,18 @@ if st.session_state['raw_excel_data'] is not None:
     with tab3:
         st.header("🎛️ 리밸런싱 시뮬레이션")
         sim_sheets = list(portfolio_dict.keys())
-        sel_sim_sheet = st.selectbox("시뮬레이션 대상 계좌:", sim_sheets, key='sim_sel')
         
-        if st.session_state['sim_target_sheet'] != sel_sim_sheet:
+        # [핵심수정] st.rerun() 제거하여 탭 튕김 완벽 해결
+        sel_sim_sheet = st.selectbox("시뮬레이션 대상 계좌:", sim_sheets, key='sim_sheet_selector')
+        
+        if st.session_state.get('sim_target_sheet') != sel_sim_sheet:
             st.session_state['sim_target_sheet'] = sel_sim_sheet
             st.session_state['sim_df'] = portfolio_dict[sel_sim_sheet].copy()
-            st.rerun()
+            # rerun을 빼고 그냥 session state만 즉시 업데이트
             
         sim_df = st.session_state['sim_df']
         cur_total = portfolio_dict[sel_sim_sheet]['평가금액'].sum()
 
-        # [원상복구] 시뮬레이션 종목 검색창
         with st.expander("➕ 종목 추가하기 (검색 및 자동완성)"):
             krx_map = get_korean_market_map()
             search_options = [f"{k} ({v})" for k, v in CUSTOM_STOCK_MAP.items()]
@@ -649,15 +651,15 @@ if st.session_state['raw_excel_data'] is not None:
                 opt = f"{k} ({v['code']})"
                 if opt not in search_options: search_options.append(opt)
             
-            search_mode_ui = st.radio("검색 방식 선택", ["📝 리스트에서 검색 (국내 종목/ETF 자동완성)", "⌨️ 직접 입력 (해외 종목/코드 입력)"], horizontal=True)
+            search_mode_ui = st.radio("검색 방식 선택", ["📝 리스트에서 검색 (국내 종목/ETF 자동완성)", "⌨️ 직접 입력 (해외 종목/코드 입력)"], horizontal=True, key="search_mode_radio")
             ac1, ac2 = st.columns([3, 1])
             
             if "리스트" in search_mode_ui:
-                input_val = ac1.selectbox("종목을 선택하세요 (타이핑하여 검색 가능)", [""] + search_options, index=0)
+                input_val = ac1.selectbox("종목을 선택하세요 (타이핑하여 검색 가능)", [""] + search_options, index=0, key="search_dropdown")
             else:
-                input_val = ac1.text_input("종목명 또는 티커(코드) 직접 입력", placeholder="예: TSLA, AAPL, 005930")
+                input_val = ac1.text_input("종목명 또는 티커(코드) 직접 입력", placeholder="예: TSLA, AAPL, 005930", key="search_textinput")
                 
-            if ac2.button("검색", use_container_width=True):
+            if ac2.button("검색", use_container_width=True, key="search_button"):
                 if not input_val: st.error("종목을 선택하거나 입력해주세요.")
                 else:
                     search_target = input_val
@@ -669,21 +671,26 @@ if st.session_state['raw_excel_data'] is not None:
                     if info: st.session_state['search_info'] = info
                     else: st.error("종목을 찾을 수 없습니다. 이름이나 코드를 다시 확인해주세요.")
             
+        # [핵심수정] 콜백 함수로 전환하여 버튼 클릭 시 화면 리로드 방지
+        def add_sim_item_callback():
+            if st.session_state.get('search_info'):
+                inf = st.session_state['search_info']
+                new_row = {
+                    '종목코드': inf['종목코드'], '종목명': inf['종목명'], '업종': inf['업종'],
+                    '국가': inf['국가'], '유형': inf['유형'], '수량': 0, '매수단가': 0,
+                    '현재가': inf['현재가'], '매수금액': 0, '평가금액': 0, '수익률': 0,
+                    '통화': inf['currency'], '시뮬레이션 수량': 0, '계좌명': st.session_state['sim_target_sheet']
+                }
+                st.session_state['sim_df'] = pd.concat([st.session_state['sim_df'], pd.DataFrame([new_row])], ignore_index=True)
+                st.session_state['search_info'] = None
+
         if st.session_state['search_info']:
             inf = st.session_state['search_info']
             search_res_df = pd.DataFrame([{'종목코드': inf['종목코드'], '종목명': inf['종목명'], '현재가': inf['현재가']}])
             st.dataframe(search_res_df.style.format({'현재가': '{:,.0f} 원'}), hide_index=True, use_container_width=True)
             
-            if st.button("리스트에 추가"):
-                new_row = {
-                    '종목코드': inf['종목코드'], '종목명': inf['종목명'], '업종': inf['업종'],
-                    '국가': inf['국가'], '유형': inf['유형'], '수량': 0, '매수단가': 0,
-                    '현재가': inf['현재가'], '매수금액': 0, '평가금액': 0, '수익률': 0,
-                    '통화': inf['currency'], '시뮬레이션 수량': 0, '계좌명': sel_sim_sheet
-                }
-                st.session_state['sim_df'] = pd.concat([sim_df, pd.DataFrame([new_row])], ignore_index=True)
-                st.session_state['search_info'] = None
-                st.rerun()
+            # 버튼 클릭 시 즉시 콜백 실행 (st.rerun 안 씀)
+            st.button("리스트에 추가", key="add_list_btn", on_click=add_sim_item_callback)
 
         edited = st.data_editor(
             sim_df[['종목명', '종목코드', '현재가', '시뮬레이션 수량']],
@@ -693,7 +700,7 @@ if st.session_state['raw_excel_data'] is not None:
                 "현재가": st.column_config.NumberColumn("현재가", format="%d 원", disabled=True),
                 "시뮬레이션 수량": st.column_config.NumberColumn("목표 수량", min_value=0, step=1, format="%.2f")
             },
-            use_container_width=True, num_rows="dynamic", key="sim_editor"
+            use_container_width=True, num_rows="dynamic", key="sim_data_editor"
         )
         
         valid_indices = edited.index.intersection(sim_df.index)
