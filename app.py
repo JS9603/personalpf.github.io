@@ -40,11 +40,9 @@ if 'sim_target_sheet' not in st.session_state:
 if 'sim_df' not in st.session_state:
     st.session_state['sim_df'] = None
 
-# 납입원금 저장을 위한 세션
 if 'user_principals' not in st.session_state:
     st.session_state['user_principals'] = {}
 
-# 엑셀 원본 데이터(백데이터) 유지를 위한 세션
 if 'raw_excel_data' not in st.session_state:
     st.session_state['raw_excel_data'] = None
 
@@ -54,10 +52,9 @@ if 'uploaded_filename' not in st.session_state:
 # 상단 헤더
 col_title, col_time = st.columns([0.7, 0.3])
 with col_title:
-    st.title("🏦 포트폴리오 매니저 v6.7")
-    st.markdown("Final Fix (시뮬레이션 안정화)")
+    st.title("🏦 포트폴리오 매니저 v6.8")
+    st.markdown("Final Fix (비교 가능성 추가)")
 with col_time:
-    # 한국 시간(KST) 설정
     kst_timezone = timezone(timedelta(hours=9))
     now_kst = datetime.now(kst_timezone)
     now_str = now_kst.strftime("%Y-%m-%d %H:%M:%S")
@@ -89,6 +86,73 @@ def get_all_exchange_rates():
     except: pass
     return rates
 
+# [NEW] 특정일 과거 환율 조회 캐싱
+@st.cache_data(ttl=3600*24)
+def get_hist_exchange_rate(target_date):
+    try:
+        # 휴일일 수 있으므로 일주일 전부터 검색 후 가장 최근 값 사용
+        start_str = (target_date - timedelta(days=7)).strftime('%Y-%m-%d')
+        end_str = target_date.strftime('%Y-%m-%d')
+        df = fdr.DataReader('USD/KRW', start_str, end_str)
+        if not df.empty: return float(df['Close'].iloc[-1])
+    except: pass
+    return 1450.0
+
+# [NEW] 특정일 과거 종가 조회 캐싱
+@st.cache_data(ttl=3600*24)
+def get_hist_price(ticker, target_date, is_kr):
+    start_str = (target_date - timedelta(days=10)).strftime('%Y-%m-%d')
+    end_str = target_date.strftime('%Y-%m-%d')
+    end_yf_str = (target_date + timedelta(days=1)).strftime('%Y-%m-%d')
+    
+    try:
+        if is_kr:
+            clean_code = ticker.split('.')[0]
+            try:
+                df = fdr.DataReader(clean_code, start_str, end_str)
+                if not df.empty: return float(df['Close'].iloc[-1])
+            except: pass
+            
+            try:
+                hist = yf.Ticker(f"{clean_code}.KS").history(start=start_str, end=end_yf_str)
+                if not hist.empty: return float(hist['Close'].iloc[-1])
+            except: pass
+            
+            try:
+                hist = yf.Ticker(f"{clean_code}.KQ").history(start=start_str, end=end_yf_str)
+                if not hist.empty: return float(hist['Close'].iloc[-1])
+            except: pass
+        else:
+            hist = yf.Ticker(ticker).history(start=start_str, end=end_yf_str)
+            if not hist.empty: return float(hist['Close'].iloc[-1])
+    except: pass
+    return 0.0
+
+@st.cache_data(ttl=3600*12)
+def get_korean_market_map():
+    market_data = {}
+    def add_to_map(df, default_sector="기타"):
+        if df is None or df.empty: return
+        code_col = 'Code' if 'Code' in df.columns else ('Symbol' if 'Symbol' in df.columns else None)
+        name_col = 'Name'
+        sector_col = 'Sector' if 'Sector' in df.columns else None
+        if not code_col or not name_col: return
+        for _, row in df.iterrows():
+            name = str(row[name_col]).strip()
+            code = str(row[code_col]).strip()
+            sector = str(row[sector_col]).strip() if sector_col and pd.notna(row[sector_col]) else default_sector
+            market_data[name] = {'code': code, 'sector': sector}
+
+    try:
+        add_to_map(fdr.StockListing('KOSPI'))
+        add_to_map(fdr.StockListing('KOSDAQ'))
+    except:
+        try: add_to_map(fdr.StockListing('KRX'))
+        except: pass
+    try: add_to_map(fdr.StockListing('ETF/KR'), default_sector="ETF")
+    except: pass
+    return market_data
+
 CUSTOM_STOCK_MAP = {
     '애플': 'AAPL', '마이크로소프트': 'MSFT', '테슬라': 'TSLA', '엔비디아': 'NVDA',
     '구글': 'GOOGL', '아마존': 'AMZN', '메타': 'META', '넷플릭스': 'NFLX',
@@ -101,126 +165,120 @@ CUSTOM_STOCK_MAP = {
 }
 TICKER_TO_KOREAN = {v: k for k, v in CUSTOM_STOCK_MAP.items()}
 
+def resolve_ticker(input_str):
+    input_str = str(input_str).strip()
+    for k, v in CUSTOM_STOCK_MAP.items():
+        if input_str.upper() == k.upper(): return v
+    krx_map = get_korean_market_map()
+    if input_str in krx_map: return krx_map[input_str]['code']
+    return input_str.upper()
+
 def is_korean_stock(ticker):
     ticker = str(ticker).strip().upper()
-    if ticker.endswith('.KS') or ticker.endswith('.KQ'):
-        return True
-    if len(ticker) == 6 and ticker[0].isdigit():
-        return True
+    if ticker.endswith('.KS') or ticker.endswith('.KQ'): return True
+    if len(ticker) == 6 and ticker[0].isdigit(): return True
     return False
 
 def resolve_ticker_naver(input_str):
     input_str = str(input_str).strip()
-    if input_str.upper() in CUSTOM_STOCK_MAP:
-        return CUSTOM_STOCK_MAP[input_str.upper()]
+    if input_str.upper() in CUSTOM_STOCK_MAP: return CUSTOM_STOCK_MAP[input_str.upper()]
     for k, v in CUSTOM_STOCK_MAP.items():
         if input_str.upper() == k.upper(): return v
-            
-    if len(input_str) == 6 and input_str[0].isdigit():
-        return input_str
+    if len(input_str) == 6 and input_str[0].isdigit(): return input_str
         
     try:
         query = urllib.parse.quote(input_str.encode('euc-kr'))
         url = f"https://ac.finance.naver.com/ac?q={query}&q_enc=euc-kr&st=111&r_format=json&t_koreng=1"
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        headers = {'User-Agent': 'Mozilla/5.0'}
         res = requests.get(url, headers=headers, timeout=3)
         items = res.json().get('items', [[]])[0]
-        if items:
-            return items[0][1]
-    except:
-        pass
-        
+        if items: return items[0][1]
+    except: pass
     return input_str.upper()
 
 @st.cache_data(ttl=60)
 def get_naver_stock_info(code):
     try:
         url = f"https://finance.naver.com/item/main.naver?code={code}"
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        headers = {'User-Agent': 'Mozilla/5.0'}
         res = requests.get(url, headers=headers, timeout=5)
         res.raise_for_status()
         text = res.text
         
         name = code
         name_match = re.search(r'<div class="wrap_company">\s*<h2>.*?<a[^>]*>(.*?)</a>', text, re.IGNORECASE | re.DOTALL)
-        if name_match: 
-            name = name_match.group(1).strip()
+        if name_match: name = name_match.group(1).strip()
             
         price = 0
         price_match = re.search(r'<dd>현재가\s+([\d,]+)', text)
-        if price_match:
-            price = int(price_match.group(1).replace(',', ''))
+        if price_match: price = int(price_match.group(1).replace(',', ''))
         else:
             p_match = re.search(r'<p class="no_today">.*?<span class="blind">([\d,]+)</span>', text, re.IGNORECASE | re.DOTALL)
             if p_match: price = int(p_match.group(1).replace(',', ''))
                 
         sector = '기타'
         sector_match = re.search(r'<dt><span class="blind">업종</span></dt>\s*<dd>(.*?)</dd>', text, re.IGNORECASE | re.DOTALL)
-        if sector_match:
-            sector = re.sub(r'<[^>]+>', '', sector_match.group(1)).strip()
+        if sector_match: sector = re.sub(r'<[^>]+>', '', sector_match.group(1)).strip()
             
-        if price > 0:
-            return {"name": name, "price": price, "sector": sector}
-    except:
-        pass
+        if price > 0: return {"name": name, "price": price, "sector": sector}
+    except: pass
     return None
+
+def get_current_price(ticker):
+    ticker = str(ticker).strip().upper()
+    try:
+        if is_korean_stock(ticker):
+            clean_code = ticker.split('.')[0]
+            try:
+                df = fdr.DataReader(clean_code)
+                if not df.empty: return float(df['Close'].iloc[-1])
+            except: pass
+            try:
+                hist = yf.Ticker(f"{clean_code}.KS").history(period="1d")
+                if not hist.empty: return float(hist['Close'].iloc[-1])
+            except: pass
+            try:
+                hist = yf.Ticker(f"{clean_code}.KQ").history(period="1d")
+                if not hist.empty: return float(hist['Close'].iloc[-1])
+            except: pass
+            return 0.0
+        ticker_obj = yf.Ticker(ticker)
+        hist = ticker_obj.history(period="1d")
+        if not hist.empty: return float(hist['Close'].iloc[-1])
+        return 0.0
+    except: return 0.0
 
 def get_stock_info_safe(input_str):
     ticker = resolve_ticker_naver(str(input_str))
-    
     try:
+        price = get_current_price(ticker)
+        if price == 0: return None
         is_korean = is_korean_stock(ticker)
         country = '한국' if is_korean else '미국'
         currency = 'KRW' if is_korean else 'USD'
+        name, sector, asset_type = ticker, '기타', '기타'
+        clean_code = ticker.split('.')[0]
 
         if is_korean:
-            clean_code = ticker.split('.')[0]
             naver_info = get_naver_stock_info(clean_code)
-            
             if naver_info:
-                name = naver_info['name']
-                price = naver_info['price']
-                sector = naver_info['sector']
-                
-                etf_keywords = ['ETF', 'ETN', 'KODEX', 'TIGER', 'ACE', 'SOL', 'ARIRANG', 'KBSTAR', 'HANARO', 'KOSEF', '금현물', 'RISE']
-                asset_type = 'ETF' if any(k in name.upper() for k in etf_keywords) else '개별주식'
-                
-                return {
-                    '종목코드': clean_code, 
-                    '종목명': name,
-                    '업종': sector, 
-                    '현재가': price,
-                    '국가': country,
-                    '유형': asset_type,
-                    'currency': currency
-                }
-            else:
-                return None
+                name, price, sector = naver_info['name'], naver_info['price'], naver_info['sector']
+                etf_kw = ['ETF', 'ETN', 'KODEX', 'TIGER', 'ACE', 'SOL', 'ARIRANG', 'KBSTAR', 'HANARO', 'KOSEF', '금현물', 'RISE']
+                asset_type = 'ETF' if any(k in name.upper() for k in etf_kw) else '개별주식'
+                return {'종목코드': clean_code, '종목명': name, '업종': sector, '현재가': price, '국가': country, '유형': asset_type, 'currency': currency}
+            return None
         else:
             ticker_obj = yf.Ticker(ticker)
             hist = ticker_obj.history(period="1d")
             if hist.empty: return None
-            
             price = float(hist['Close'].iloc[-1])
             info = ticker_obj.info
             name = info.get('shortName', ticker)
-            if ticker in TICKER_TO_KOREAN:
-                name = TICKER_TO_KOREAN[ticker]
-                
+            if ticker in TICKER_TO_KOREAN: name = TICKER_TO_KOREAN[ticker]
             sector = info.get('sector', '기타')
             asset_type = 'ETF' if info.get('quoteType') == 'ETF' else '개별주식'
-            
-            return {
-                '종목코드': ticker, 
-                '종목명': name,
-                '업종': sector, 
-                '현재가': price,
-                '국가': country,
-                '유형': asset_type,
-                'currency': currency
-            }
-    except:
-        return None
+            return {'종목코드': ticker, '종목명': name, '업종': sector, '현재가': price, '국가': country, '유형': asset_type, 'currency': currency}
+    except: return None
 
 def classify_asset_type(row):
     name = str(row.get('종목명', '')).upper()
@@ -248,6 +306,8 @@ def color_profit(val):
 
 def calculate_portfolio(df, usd_krw):
     current_prices, eval_values, buy_values, currencies = [], [], [], []
+    krx_map = get_korean_market_map()
+    code_to_name = {v['code']: k for k, v in krx_map.items()}
 
     for index, row in df.iterrows():
         raw_ticker = str(row['종목코드']).strip()
@@ -255,40 +315,38 @@ def calculate_portfolio(df, usd_krw):
         current_name = str(row.get('종목명', ''))
         clean_code = ticker.split('.')[0]
         
+        if not current_name or current_name == 'nan':
+            if clean_code in code_to_name: df.at[index, '종목명'] = code_to_name[clean_code]
+            else:
+                for k, v in CUSTOM_STOCK_MAP.items():
+                    if v == ticker: df.at[index, '종목명'] = k
+
         qty = float(row['수량'])
         avg_price = float(row['매수단가'])
         country = str(row.get('국가', '')).strip()
 
         is_kr_stock = (country == '한국') or is_korean_stock(ticker)
         price = 0.0
-        currency = 'KRW' if is_kr_stock else 'USD'
 
         if ticker == 'KRW':
-            price = 1.0
-            eval_val, buy_val = qty, qty * avg_price
-            currency = 'KRW'
+            price, eval_val, buy_val, currency = 1.0, qty, qty * avg_price, 'KRW'
         elif ticker == 'USD':
             price = usd_krw
-            currency = 'USD'
             eval_val = qty * usd_krw
             buy_val = (qty * avg_price * usd_krw) if avg_price < 50 else (qty * avg_price)
+            currency = 'USD'
         elif is_kr_stock:
             n_info = get_naver_stock_info(clean_code)
             if n_info:
                 price = float(n_info['price'])
-                if not current_name or current_name == 'nan' or current_name.isdigit():
-                    df.at[index, '종목명'] = n_info['name']
-                if '업종' not in df.columns or df.at[index, '업종'] == '기타':
-                    df.at[index, '업종'] = n_info['sector']
-            eval_val, buy_val = price * qty, avg_price * qty
-            currency = 'KRW'
+                if not current_name or current_name == 'nan' or current_name.isdigit(): df.at[index, '종목명'] = n_info['name']
+                if '업종' not in df.columns or df.at[index, '업종'] == '기타': df.at[index, '업종'] = n_info['sector']
+            eval_val, buy_val, currency = price * qty, avg_price * qty, 'KRW'
         else:
             hist = yf.Ticker(ticker).history(period="1d")
             if not hist.empty: price = float(hist['Close'].iloc[-1])
-            if not current_name or current_name == 'nan' or current_name == ticker:
-                df.at[index, '종목명'] = TICKER_TO_KOREAN.get(ticker, ticker)
-            eval_val, buy_val = price * qty * usd_krw, avg_price * qty * usd_krw
-            currency = 'USD'
+            if not current_name or current_name == 'nan' or current_name == ticker: df.at[index, '종목명'] = TICKER_TO_KOREAN.get(ticker, ticker)
+            eval_val, buy_val, currency = price * qty * usd_krw, avg_price * qty * usd_krw, 'USD'
         
         current_prices.append(price)
         eval_values.append(eval_val)
@@ -301,7 +359,6 @@ def calculate_portfolio(df, usd_krw):
     df['수익률'] = df.apply(lambda x: ((x['평가금액'] - x['매수금액']) / x['매수금액'] * 100) if x['매수금액'] > 0 else 0, axis=1)
     df['유형'] = df.apply(classify_asset_type, axis=1)
     df['통화'] = currencies
-    
     if '업종' not in df.columns: df['업종'] = '기타'
     df['업종'] = df['업종'].fillna('기타')
     if '시뮬레이션 수량' not in df.columns: df['시뮬레이션 수량'] = df['수량']
@@ -313,42 +370,13 @@ def calculate_portfolio(df, usd_krw):
 def get_template_excel():
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df1 = pd.DataFrame({
-            '종목코드': ['005930', 'KRW'], 
-            '종목명': ['삼성전자', '원화예수금'], 
-            '업종': ['반도체', '현금'], 
-            '국가': ['한국', '한국'], 
-            '수량': [10, 1000000], 
-            '매수단가': [70000, 1],
-            '납입원금': [2000000, 0]
-        })
-        df1.to_excel(writer, index=False, sheet_name='국내계좌')
-        
-        df2 = pd.DataFrame({
-            '종목코드': ['AAPL', 'IAU', 'USD'], 
-            '종목명': ['애플', 'iShares Gold', '달러예수금'], 
-            '업종': ['IT', '원자재', '현금'], 
-            '국가': ['미국', '미국', '미국'], 
-            '수량': [5, 10, 1000], 
-            '매수단가': [150, 40, 1],
-            '납입원금': [3000, 0, 0]
-        })
-        df2.to_excel(writer, index=False, sheet_name='미국계좌')
-        
-        df3 = pd.DataFrame({
-            '종목코드': ['005930', '0072R0'], 
-            '종목명': ['삼성전자', 'TIGER KRX금현물'], 
-            '업종': ['반도체', '원자재'], 
-            '국가': ['한국', '한국'], 
-            '수량': [100, 50], 
-            '매수단가': [60000, 12000],
-            '납입원금': [6000000, 0] 
-        })
-        df3.to_excel(writer, index=False, sheet_name='퇴직연금(IRP)')
+        pd.DataFrame({'종목코드': ['005930', 'KRW'], '종목명': ['삼성전자', '원화예수금'], '업종': ['반도체', '현금'], '국가': ['한국', '한국'], '수량': [10, 1000000], '매수단가': [70000, 1], '납입원금': [2000000, 0]}).to_excel(writer, index=False, sheet_name='국내계좌')
+        pd.DataFrame({'종목코드': ['AAPL', 'IAU', 'USD'], '종목명': ['애플', 'iShares Gold', '달러예수금'], '업종': ['IT', '원자재', '현금'], '국가': ['미국', '미국', '미국'], '수량': [5, 10, 1000], '매수단가': [150, 40, 1], '납입원금': [3000, 0, 0]}).to_excel(writer, index=False, sheet_name='미국계좌')
+        pd.DataFrame({'종목코드': ['005930', '0072R0'], '종목명': ['삼성전자', 'TIGER KRX금현물'], '업종': ['반도체', '원자재'], '국가': ['한국', '한국'], '수량': [100, 50], '매수단가': [60000, 12000], '납입원금': [6000000, 0]}).to_excel(writer, index=False, sheet_name='퇴직연금(IRP)')
     return output.getvalue()
 
 with st.expander("⬇️ 엑셀 양식 다운로드"):
-    st.download_button(label="엑셀 양식 받기 (.xlsx)", data=get_template_excel(), file_name='portfolio_template_v6.7.xlsx')
+    st.download_button(label="엑셀 양식 받기 (.xlsx)", data=get_template_excel(), file_name='portfolio_template_v6.8.xlsx')
 
 # -----------------------------------------------------------------------------
 # 4. 메인 로직
@@ -377,69 +405,102 @@ if st.session_state['raw_excel_data'] is not None:
                     
                     if '납입원금' in df_sheet.columns:
                         first_val = df_sheet['납입원금'].iloc[0]
-                        if pd.notna(first_val):
-                            excel_principals[sheet_name] = float(first_val)
+                        if pd.notna(first_val): excel_principals[sheet_name] = float(first_val)
 
                     processed_df = calculate_portfolio(df_sheet.copy(), usd_krw)
                     processed_df['계좌명'] = sheet_name
                     processed_data[sheet_name] = processed_df
             
-            if not processed_data:
-                st.error("데이터를 읽을 수 없습니다.")
-                st.stop()
-            
+            if not processed_data: st.error("데이터를 읽을 수 없습니다."); st.stop()
             st.session_state['portfolio_data'] = processed_data
             st.session_state['usd_krw'] = usd_krw
-            
             if excel_principals:
-                for k, v in excel_principals.items():
-                    st.session_state['user_principals'][k] = v
-            
+                for k, v in excel_principals.items(): st.session_state['user_principals'][k] = v
         except Exception as e:
-            st.error(f"오류: {e}")
-            st.stop()
+            st.error(f"오류: {e}"); st.stop()
 
     portfolio_dict = st.session_state['portfolio_data']
     usd_krw = st.session_state['usd_krw']
 
-    # --- 사이드바: 납입원금 설정 ---
+    # ==========================================
+    # 사이드바: 1. 수익률 비교 기준 설정 2. 납입원금 설정
+    # ==========================================
     with st.sidebar:
-        st.header("💰 계좌별 납입원금 설정")
-        st.caption("엑셀에 '납입원금' 열을 추가하면 자동 입력됩니다.")
+        st.header("📈 수익률 비교 기준 설정")
+        compare_mode = st.radio("비교 기준", ["💰 납입원금 (기본)", "📅 특정일 종가"], index=0)
         
+        target_date = None
+        if compare_mode == "📅 특정일 종가":
+            target_date = st.date_input("기준일 선택", value=datetime.today() - timedelta(days=1), max_value=datetime.today())
+            st.caption(f"선택한 날짜({target_date.strftime('%y.%m.%d')})의 종가를 기준으로 수익률을 계산합니다.")
+            
+        st.divider()
+        
+        st.header("💰 계좌별 납입원금 설정")
+        if compare_mode == "📅 특정일 종가":
+            st.info("💡 현재 특정일 종가 모드입니다. 아래 입력한 납입원금은 '기본' 모드일 때만 수익률 계산에 적용됩니다.")
+        else:
+            st.caption("엑셀에 '납입원금' 열을 추가하면 자동 입력됩니다.")
+            
         updated_principals = {}
         for sheet_name, df in portfolio_dict.items():
             default_val = df['매수금액'].sum()
             current_val = st.session_state['user_principals'].get(sheet_name, default_val)
-            
-            val = st.number_input(
-                f"{sheet_name}", 
-                min_value=0.0, 
-                value=float(current_val), 
-                step=10000.0, 
-                format="%.0f",
-                key=f"input_{sheet_name}"
-            )
+            val = st.number_input(f"{sheet_name}", min_value=0.0, value=float(current_val), step=10000.0, format="%.0f", key=f"input_{sheet_name}")
             updated_principals[sheet_name] = val
-        
         st.session_state['user_principals'] = updated_principals
+
+    # ==========================================
+    # 비교 모드에 따른 데이터 재가공 로직
+    # ==========================================
+    display_dict = {}
+    account_base_vals = {}
+    price_col_name = "매수단가" if compare_mode == "💰 납입원금 (기본)" else "기준일종가"
+
+    with st.spinner("비교 데이터를 불러오는 중입니다..."):
+        hist_ex_rate = get_hist_exchange_rate(target_date) if compare_mode == "📅 특정일 종가" else 1450.0
+        
+        for sheet, df in portfolio_dict.items():
+            new_df = df.copy()
+            if compare_mode == "📅 특정일 종가":
+                hist_prices = []
+                hist_bases = []
+                for _, row in new_df.iterrows():
+                    t = row['종목코드']
+                    qty = row['수량']
+                    is_kr = (row['국가'] == '한국') or is_korean_stock(t)
+                    
+                    if t == 'KRW': hp, hb = 1.0, qty
+                    elif t == 'USD': hp, hb = hist_ex_rate, qty * hist_ex_rate
+                    else:
+                        hp = get_hist_price(t, target_date, is_kr)
+                        hb = hp * qty if is_kr else hp * qty * hist_ex_rate
+                        
+                    hist_prices.append(hp)
+                    hist_bases.append(hb)
+                    
+                new_df[price_col_name] = hist_prices
+                new_df['비교금액'] = hist_bases
+                new_df['수익률'] = new_df.apply(lambda x: ((x['평가금액'] - x['비교금액']) / x['비교금액'] * 100) if x['비교금액'] > 0 else 0, axis=1)
+                account_base_vals[sheet] = sum(hist_bases)
+            else:
+                new_df[price_col_name] = new_df['매수단가']
+                new_df['비교금액'] = new_df['매수금액']
+                account_base_vals[sheet] = st.session_state['user_principals'].get(sheet, new_df['매수금액'].sum())
+                
+            display_dict[sheet] = new_df
 
     # --- 퇴직연금/IRP/DC 제외 로직 ---
     HIDDEN_KEYWORDS = ['퇴직연금', 'IRP', 'DC']
-    
     dashboard_dfs = []
     dashboard_total_principal = 0
     
-    for name, df in portfolio_dict.items():
+    for name, df in display_dict.items():
         if not any(k in name for k in HIDDEN_KEYWORDS):
             dashboard_dfs.append(df)
-            dashboard_total_principal += st.session_state['user_principals'].get(name, df['매수금액'].sum())
+            dashboard_total_principal += account_base_vals[name]
 
-    if dashboard_dfs:
-        all_df_dashboard = pd.concat(dashboard_dfs, ignore_index=True)
-    else:
-        all_df_dashboard = pd.DataFrame() 
-
+    all_df_dashboard = pd.concat(dashboard_dfs, ignore_index=True) if dashboard_dfs else pd.DataFrame() 
     all_df_raw = pd.concat(portfolio_dict.values(), ignore_index=True)
 
     tab1, tab2, tab3, tab4 = st.tabs(["📊 통합 대시보드", "📂 계좌별 상세", "🎛️ 시뮬레이션", "📝 원본 데이터"])
@@ -447,16 +508,16 @@ if st.session_state['raw_excel_data'] is not None:
     # --- [TAB 1] 통합 대시보드 ---
     with tab1:
         st.subheader("🌐 전체 자산 현황 (퇴직연금 제외)")
-        
         if not all_df_dashboard.empty:
             total_eval = all_df_dashboard['평가금액'].sum()
             total_principal = dashboard_total_principal
-            
             profit = total_eval - total_principal
             yield_rate = (profit / total_principal * 100) if total_principal > 0 else 0
             
+            base_label = "총 납입원금" if compare_mode == "💰 납입원금 (기본)" else f"기준 평가액 ({target_date.strftime('%m/%d')})"
+            
             m1, m2, m3 = st.columns(3)
-            m1.metric("총 납입원금", f"{total_principal:,.0f} 원")
+            m1.metric(base_label, f"{total_principal:,.0f} 원")
             m2.metric("총 평가금액", f"{total_eval:,.0f} 원", f"{profit:+,.0f} 원")
             m3.metric("총 수익률", f"{yield_rate:.2f} %", f"{yield_rate:.2f} %")
             st.divider()
@@ -470,11 +531,11 @@ if st.session_state['raw_excel_data'] is not None:
 
             st.divider()
             st.subheader("📋 전체 자산 상세")
-            summary_cols = ['계좌명', '종목명', '업종', '국가', '수량', '매수단가', '현재가', '수익률', '평가금액']
+            summary_cols = ['계좌명', '종목명', '업종', '국가', '수량', price_col_name, '현재가', '수익률', '평가금액']
+            
+            fmt_dict = {'수량': '{:,.2f}', price_col_name: '{:,.0f}', '현재가': '{:,.0f}', '수익률': '{:+.2f}%', '평가금액': '{:,.0f}'}
             st.dataframe(
-                all_df_dashboard[summary_cols].style.format({
-                    '수량': '{:,.2f}', '매수단가': '{:,.0f}', '현재가': '{:,.0f}', '수익률': '{:+.2f}%', '평가금액': '{:,.0f}'
-                }).map(color_profit, subset=['수익률']),
+                all_df_dashboard[summary_cols].style.format(fmt_dict).map(color_profit, subset=['수익률']),
                 use_container_width=True, hide_index=True
             )
         else:
@@ -482,18 +543,19 @@ if st.session_state['raw_excel_data'] is not None:
 
     # --- [TAB 2] 계좌별 상세 ---
     with tab2:
-        sheet_names = list(portfolio_dict.keys())
+        sheet_names = list(display_dict.keys())
         selected_sheet = st.selectbox("계좌 선택:", sheet_names)
-        target_df = portfolio_dict[selected_sheet]
+        target_df = display_dict[selected_sheet]
         
-        sheet_principal = st.session_state['user_principals'].get(selected_sheet, target_df['매수금액'].sum())
-        
+        sheet_principal = account_base_vals[selected_sheet]
         t_eval = target_df['평가금액'].sum()
         t_profit = t_eval - sheet_principal
         t_yield = (t_profit / sheet_principal * 100) if sheet_principal > 0 else 0
         
+        base_label = "납입 원금" if compare_mode == "💰 납입원금 (기본)" else f"기준 평가액 ({target_date.strftime('%m/%d')})"
+        
         m1, m2, m3 = st.columns(3)
-        m1.metric("납입 원금", f"{sheet_principal:,.0f} 원")
+        m1.metric(base_label, f"{sheet_principal:,.0f} 원")
         m2.metric("계좌 평가금액", f"{t_eval:,.0f} 원", f"{t_profit:+,.0f} 원")
         m3.metric("계좌 수익률", f"{t_yield:.2f} %", f"{t_yield:.2f} %")
         st.divider()
@@ -504,14 +566,14 @@ if st.session_state['raw_excel_data'] is not None:
         with c3: st.plotly_chart(create_pie(target_df, '유형', "3. 유형 비중"), use_container_width=True, key='t2_c3')
         
         st.caption(f"📋 {selected_sheet} 보유 종목")
+        
+        fmt_dict_tab2 = {'수량': '{:,.2f}', price_col_name: '{:,.0f}', '현재가': '{:,.0f}', '수익률': '{:+.2f}%', '평가금액': '{:,.0f}'}
         st.dataframe(
-            target_df[['종목명', '업종', '수량', '매수단가', '현재가', '수익률', '평가금액']].style.format({
-                '수량': '{:,.2f}', '매수단가': '{:,.0f}', '현재가': '{:,.0f}', '수익률': '{:+.2f}%', '평가금액': '{:,.0f}'
-            }).map(color_profit, subset=['수익률']),
+            target_df[['종목명', '업종', '수량', price_col_name, '현재가', '수익률', '평가금액']].style.format(fmt_dict_tab2).map(color_profit, subset=['수익률']),
             use_container_width=True, hide_index=True
         )
 
-    # --- [TAB 3] 시뮬레이션 ---
+    # --- [TAB 3] 시뮬레이션 (원본 portfolio_dict 기반) ---
     with tab3:
         st.header("🎛️ 리밸런싱 시뮬레이션")
         sim_sheets = list(portfolio_dict.keys())
@@ -525,34 +587,37 @@ if st.session_state['raw_excel_data'] is not None:
         sim_df = st.session_state['sim_df']
         cur_total = portfolio_dict[sel_sim_sheet]['평가금액'].sum()
 
-        with st.expander("➕ 종목 추가하기 (네이버 파이낸스 직접 검색)"):
+        with st.expander("➕ 종목 추가하기 (검색 및 자동완성)"):
+            krx_map = get_korean_market_map()
+            search_options = [f"{k} ({v})" for k, v in CUSTOM_STOCK_MAP.items()]
+            for k, v in krx_map.items():
+                opt = f"{k} ({v['code']})"
+                if opt not in search_options: search_options.append(opt)
+            
+            search_mode = st.radio("검색 방식 선택", ["📝 리스트에서 검색 (국내 종목/ETF 자동완성)", "⌨️ 직접 입력 (해외 종목/코드 입력)"], horizontal=True)
             ac1, ac2 = st.columns([3, 1])
-            input_val = ac1.text_input("종목명 또는 티커(코드) 입력", placeholder="예: 삼성전자, 한화에어로스페이스, 005930, TSLA")
+            
+            if "리스트" in search_mode:
+                input_val = ac1.selectbox("종목을 선택하세요 (타이핑하여 검색 가능)", [""] + search_options, index=0)
+            else:
+                input_val = ac1.text_input("종목명 또는 티커(코드) 직접 입력", placeholder="예: TSLA, AAPL, 005930")
                 
             if ac2.button("검색"):
-                if not input_val:
-                    st.error("종목을 입력해주세요.")
+                if not input_val: st.error("종목을 선택하거나 입력해주세요.")
                 else:
-                    info = get_stock_info_safe(input_val)
-                    if info: 
-                        st.session_state['search_info'] = info
-                    else: 
-                        st.error("종목을 찾을 수 없습니다. 이름이나 코드를 다시 확인해주세요.")
+                    search_target = input_val
+                    if "리스트" in search_mode:
+                        match = re.search(r'\((.*?)\)$', input_val)
+                        if match: search_target = match.group(1)
+                            
+                    info = get_stock_info_safe(search_target)
+                    if info: st.session_state['search_info'] = info
+                    else: st.error("종목을 찾을 수 없습니다. 이름이나 코드를 다시 확인해주세요.")
             
         if st.session_state['search_info']:
             inf = st.session_state['search_info']
-            
-            search_res_df = pd.DataFrame([{
-                '종목코드': inf['종목코드'],
-                '종목명': inf['종목명'],
-                '현재가': inf['현재가']
-            }])
-
-            st.dataframe(
-                search_res_df.style.format({'현재가': '{:,.0f} 원'}),
-                hide_index=True,
-                use_container_width=True
-            )
+            search_res_df = pd.DataFrame([{'종목코드': inf['종목코드'], '종목명': inf['종목명'], '현재가': inf['현재가']}])
+            st.dataframe(search_res_df.style.format({'현재가': '{:,.0f} 원'}), hide_index=True, use_container_width=True)
             
             if st.button("리스트에 추가"):
                 new_row = {
@@ -584,18 +649,14 @@ if st.session_state['raw_excel_data'] is not None:
         
         def calc_sim_total(row):
             p, q = row['현재가'], row['시뮬레이션 수량']
-            if row['통화'] == 'USD' or row['국가'] == '미국':
-                return p * q * usd_krw
-            return p * q
+            return p * q * usd_krw if row['통화'] == 'USD' or row['국가'] == '미국' else p * q
         
         sim_df['예상 평가금액'] = sim_df.apply(calc_sim_total, axis=1)
         sim_df['수량변동'] = sim_df['시뮬레이션 수량'] - sim_df['수량']
+        
         def calc_diff_amt(row):
-            p = row['현재가']
-            q_diff = row['수량변동']
-            if row['통화'] == 'USD' or row['국가'] == '미국':
-                return p * q_diff * usd_krw
-            return p * q_diff
+            p, q_diff = row['현재가'], row['수량변동']
+            return p * q_diff * usd_krw if row['통화'] == 'USD' or row['국가'] == '미국' else p * q_diff
 
         sim_df['매매금액'] = sim_df.apply(calc_diff_amt, axis=1)
         sim_total = sim_df['예상 평가금액'].sum()
