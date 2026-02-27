@@ -52,8 +52,8 @@ if 'uploaded_filename' not in st.session_state:
 # 상단 헤더
 col_title, col_time = st.columns([0.7, 0.3])
 with col_title:
-    st.title("🏦 포트폴리오 매니저 v6.9")
-    st.markdown("Final Fix (정상화 완료)")
+    st.title("🏦 포트폴리오 매니저 v7.0")
+    st.markdown("UI Fix (디자인 조정)")
 with col_time:
     kst_timezone = timezone(timedelta(hours=9))
     now_kst = datetime.now(kst_timezone)
@@ -64,6 +64,37 @@ with col_time:
     if st.button("🔄 즉시 갱신"):
         st.session_state['portfolio_data'] = None
         st.rerun()
+
+# [NEW] Custom CSS
+st.markdown("""
+<style>
+/* 시뮬레이션 '종목 추가' 영역 카드 스타일 */
+.stSearchContainer {
+    background-color: #f0f2f6;
+    padding: 20px;
+    border-radius: 10px;
+    border: 1px solid #d1d8e0;
+    margin-bottom: 20px;
+    transition: all 0.3s ease;
+}
+.stSearchContainer:hover {
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+/* 검색 버튼 스타일 조정 */
+div[data-testid="stButton"] button {
+    border-radius: 5px;
+    background-color: #4a69bd;
+    color: white;
+    border: none;
+    transition: background-color 0.3s ease;
+}
+div[data-testid="stButton"] button:hover {
+    background-color: #1e3799;
+    color: white;
+}
+</style>
+""", unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
 # 2. 데이터 처리 및 검색 함수 (네이버 파이낸스 직접 연결)
@@ -373,7 +404,7 @@ def get_template_excel():
     return output.getvalue()
 
 with st.expander("⬇️ 엑셀 양식 다운로드"):
-    st.download_button(label="엑셀 양식 받기 (.xlsx)", data=get_template_excel(), file_name='portfolio_template_v6.9.xlsx')
+    st.download_button(label="엑셀 양식 받기 (.xlsx)", data=get_template_excel(), file_name='portfolio_template_v7.0.xlsx')
 
 # -----------------------------------------------------------------------------
 # 4. 메인 로직
@@ -419,9 +450,7 @@ if st.session_state['raw_excel_data'] is not None:
     portfolio_dict = st.session_state['portfolio_data']
     usd_krw = st.session_state['usd_krw']
 
-    # ==========================================
-    # 사이드바: 수익률 비교 기준 설정 (3개 옵션)
-    # ==========================================
+    # --- 사이드바: 수익률 비교 기준 설정 (3개 옵션) ---
     with st.sidebar:
         st.header("📈 수익률 비교 기준")
         compare_mode = st.radio("기준 선택", ["💰 납입원금 기준", "📊 매입원가 기준", "📅 특정기준일 기준"], index=0)
@@ -447,9 +476,7 @@ if st.session_state['raw_excel_data'] is not None:
             updated_principals[sheet_name] = val
         st.session_state['user_principals'] = updated_principals
 
-    # ==========================================
-    # 모드별 데이터 재가공 로직
-    # ==========================================
+    # --- 모드별 데이터 재가공 로직 ---
     display_dict = {}
     account_base_vals = {}
     price_col_name = "기준일종가" if compare_mode == "📅 특정기준일 기준" else "매수단가"
@@ -594,49 +621,56 @@ if st.session_state['raw_excel_data'] is not None:
         sim_df = st.session_state['sim_df']
         cur_total = portfolio_dict[sel_sim_sheet]['평가금액'].sum()
 
-        with st.expander("➕ 종목 추가하기 (검색 및 자동완성)"):
-            krx_map = get_korean_market_map()
-            search_options = [f"{k} ({v})" for k, v in CUSTOM_STOCK_MAP.items()]
-            for k, v in krx_map.items():
-                opt = f"{k} ({v['code']})"
-                if opt not in search_options: search_options.append(opt)
-            
-            search_mode_ui = st.radio("검색 방식 선택", ["📝 리스트에서 검색 (국내 종목/ETF 자동완성)", "⌨️ 직접 입력 (해외 종목/코드 입력)"], horizontal=True)
-            ac1, ac2 = st.columns([3, 1])
-            
-            if "리스트" in search_mode_ui:
-                input_val = ac1.selectbox("종목을 선택하세요 (타이핑하여 검색 가능)", [""] + search_options, index=0)
+        # [수정] custom CSS가 적용된 '종목 추가' 컨테이너
+        st.markdown('<div class="stSearchContainer">', unsafe_allow_html=True)
+        
+        # 라디오 버튼 UI 제거, 드롭다운 내 text로 변경 (v7.0)
+        krx_map_sim = get_korean_market_map()
+        search_options_sim = [f"{k} ({v})" for k, v in CUSTOM_STOCK_MAP.items()]
+        for k_sim, v_sim in krx_map_sim.items():
+            opt_sim = f"{k_sim} ({v_sim['code']})"
+            if opt_sim not in search_options_sim: search_options_sim.append(opt_sim)
+
+        ac1_sim, ac2_sim = st.columns([3, 1])
+        # 드롭다운 형식으로 통합 (v7.0)
+        input_val_sim = ac1_sim.selectbox("종목 선택 (타이핑 검색 가능, 국내/ETF 자동완성)", [""] + search_options_sim, index=0)
+
+        # 검색 버튼
+        search_btn_sim = ac2_sim.button("검색", key="sim_search_btn")
+        
+        st.markdown('</div>', unsafe_allow_html=True) # 카드 닫기
+
+        # 검색 로직
+        if search_btn_sim:
+            if not input_val_sim: st.error("종목을 선택해주세요.")
             else:
-                input_val = ac1.text_input("종목명 또는 티커(코드) 직접 입력", placeholder="예: TSLA, AAPL, 005930")
-                
-            if ac2.button("검색"):
-                if not input_val: st.error("종목을 선택하거나 입력해주세요.")
-                else:
-                    search_target = input_val
-                    if "리스트" in search_mode_ui:
-                        match = re.search(r'\((.*?)\)$', input_val)
-                        if match: search_target = match.group(1)
-                            
-                    info = get_stock_info_safe(search_target)
-                    if info: st.session_state['search_info'] = info
-                    else: st.error("종목을 찾을 수 없습니다. 이름이나 코드를 다시 확인해주세요.")
+                search_target_sim = input_val_sim
+                # 드롭다운 선택 시 괄호 안의 코드만 정밀 추출
+                match_sim = re.search(r'\((.*?)\)$', input_val_sim)
+                if match_sim: search_target_sim = match_sim.group(1)
+                    
+                info_sim = get_stock_info_safe(search_target_sim)
+                if info_sim: st.session_state['search_info'] = info_sim
+                else: st.error("종목을 찾을 수 없습니다. 이름이나 코드를 다시 확인해주세요.")
             
+        # 검색 결과 표시 및 추가 버튼
         if st.session_state['search_info']:
-            inf = st.session_state['search_info']
-            search_res_df = pd.DataFrame([{'종목코드': inf['종목코드'], '종목명': inf['종목명'], '현재가': inf['현재가']}])
-            st.dataframe(search_res_df.style.format({'현재가': '{:,.0f} 원'}), hide_index=True, use_container_width=True)
+            inf_sim = st.session_state['search_info']
+            search_res_df_sim = pd.DataFrame([{'종목코드': inf_sim['종목코드'], '종목명': inf_sim['종목명'], '현재가': inf_sim['현재가']}])
+            st.dataframe(search_res_df_sim.style.format({'현재가': '{:,.0f} 원'}), hide_index=True, use_container_width=True)
             
-            if st.button("리스트에 추가"):
-                new_row = {
-                    '종목코드': inf['종목코드'], '종목명': inf['종목명'], '업종': inf['업종'],
-                    '국가': inf['국가'], '유형': inf['유형'], '수량': 0, '매수단가': 0,
-                    '현재가': inf['현재가'], '매수금액': 0, '평가금액': 0, '수익률': 0,
-                    '통화': inf['currency'], '시뮬레이션 수량': 0, '계좌명': sel_sim_sheet
+            if st.button("리스트에 추가", key="add_to_list_btn"):
+                new_row_sim = {
+                    '종목코드': inf_sim['종목코드'], '종목명': inf_sim['종목명'], '업종': inf_sim['업종'],
+                    '국가': inf_sim['국가'], '유형': inf_sim['유형'], '수량': 0, '매수단가': 0,
+                    '현재가': inf_sim['현재가'], '매수금액': 0, '평가금액': 0, '수익률': 0,
+                    '통화': inf_sim['currency'], '시뮬레이션 수량': 0, '계좌명': sel_sim_sheet
                 }
-                st.session_state['sim_df'] = pd.concat([sim_df, pd.DataFrame([new_row])], ignore_index=True)
+                st.session_state['sim_df'] = pd.concat([sim_df, pd.DataFrame([new_row_sim])], ignore_index=True)
                 st.session_state['search_info'] = None
                 st.rerun()
 
+        # 데이터 에디터 (수량 변동)
         edited = st.data_editor(
             sim_df[['종목명', '종목코드', '현재가', '시뮬레이션 수량']],
             column_config={
@@ -648,6 +682,7 @@ if st.session_state['raw_excel_data'] is not None:
             use_container_width=True, num_rows="dynamic", key="sim_editor"
         )
         
+        # [수정] 행 삭제 완벽 반영: 데이터 에디터에서 발생한 '행 삭제'를 원본 sim_df에 동기화
         valid_indices = edited.index.intersection(sim_df.index)
         sim_df = sim_df.loc[valid_indices].copy()
         sim_df['시뮬레이션 수량'] = edited.loc[valid_indices, '시뮬레이션 수량']
